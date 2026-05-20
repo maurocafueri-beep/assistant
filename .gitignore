@@ -1,0 +1,26 @@
+venv-runtime/
+venv-training/
+venv-tts/
+venv*/
+.venv/
+data/
+logs/
+.env
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
+docker/searxng/settings.yml
+.vscode/
+.idea/
+
+# Dipendenza vendorizzata con un proprio repository git
+vendor/

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "local-assistant"
+version = "0.1.0"
+description = "Assistente AI locale"
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["core*", "modules*", "api*", "config*", "training*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+log_cli = true
+log_cli_level = "INFO"
+markers = [
+    "slow: test che richiedono servizi reali (SearXNG, Ollama, Whisper…). Skippati con SKIP_SLOW=1",
+]

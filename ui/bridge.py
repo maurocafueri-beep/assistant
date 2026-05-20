@@ -1,0 +1,469 @@
+"""
+ui/bridge.py  —  WSManager + UIBridge
+Aggiunge model listing/switching rispetto alla versione precedente.
+"""
+from __future__ import annotations
+import asyncio, json, time
+from dataclasses import dataclass
+from typing import Any, Set
+from core.logger import logger
+from core.voice_loop import (
+    VoiceLoop, LoopState,
+    _PTT_MIN_DURATION_S, _PTT_SAMPLE_RATE, _PTT_BLOCK_SIZE,
+)
+
+_SPECIAL_KEYS = {"space","f1","f2","f3","f4","f5","f6","f7","f8","f9","f10","f11","f12",
+                 "ctrl_l","ctrl_r","shift_l","shift_r","alt_l","alt_r","caps_lock","tab",
+                 "insert","scroll_lock","pause","num_lock"}
+
+def _resolve_key(key_str: str) -> Any:
+    from pynput import keyboard as kb
+    k = key_str.lower().strip()
+    if k in _SPECIAL_KEYS: return getattr(kb.Key, k, None)
+    if len(k) == 1: return kb.KeyCode.from_char(k)
+    return None
+
+class WSManager:
+    def __init__(self) -> None:
+        self._clients: Set[Any] = set()
+        self._lock = asyncio.Lock()
+    async def connect(self, ws: Any) -> None:
+        await ws.accept()
+        async with self._lock: self._clients.add(ws)
+        logger.debug("ui.bridge | WS connesso ({})", len(self._clients))
+    def disconnect(self, ws: Any) -> None:
+        self._clients.discard(ws)
+    async def broadcast(self, payload: dict) -> None:
+        if not self._clients: return
+        text = json.dumps(payload, ensure_ascii=False)
+        dead = []
+        async with self._lock: clients = list(self._clients)
+        for ws in clients:
+            try: await ws.send_text(text)
+            except: dead.append(ws)
+        for ws in dead: self.disconnect(ws)
+    @property
+    def n_clients(self): return len(self._clients)
+
+@dataclass
+class _TextMessage:
+    text: str
+    def is_empty(self): return not self.text.strip()
+
+class UIBridge(VoiceLoop):
+    def __init__(self, ws_manager: WSManager, ptt_key: str = "space", **kw):
+        super().__init__(**kw)
+        self._ws = ws_manager
+        self._ptt_key_str = ptt_key
+        self._ptt_key_obj = _resolve_key(ptt_key)
+        self._last_stt_ms: float = 0.0   # transcription time (from _run_ptt)
+        self._last_llm_ms: float = 0.0   # TTFT: stream_start → first chunk
+        self._last_tts_ms: float = 0.0   # TTS: first synthesize() → first audio play
+
+        # ── Multi-sessione ──────────────────────────────────────────────
+        # Registry: session_id → {name, created, last_active, messages:[{role,text,ts}]}
+        self._sessions: dict[str, dict] = {}
+        self._persist_cb = None   # set by app.py: callable(sessions_dict)
+        self._register_session(self._session_id, name="Chat 1")
+
+    def set_persist_callback(self, cb) -> None:
+        """app.py registra qui la funzione che salva _sessions su disco."""
+        self._persist_cb = cb
+
+    def _persist(self) -> None:
+        if self._persist_cb is not None:
+            try:
+                self._persist_cb(self._sessions)
+            except Exception as e:
+                logger.warning("ui.bridge | persist fallito: {}", e)
+
+    # ── Session management ───────────────────────────────────────────────
+    def _register_session(self, sid: str, name: str) -> None:
+        import time as _t
+        self._sessions[sid] = {
+            "id": sid, "name": name,
+            "created": _t.time(), "last_active": _t.time(),
+            "messages": [],
+        }
+
+    def list_sessions(self) -> list[dict]:
+        out = []
+        for sid, s in self._sessions.items():
+            msgs = s["messages"]
+            last = msgs[-1]["text"] if msgs else ""
+            out.append({
+                "id": sid, "name": s["name"],
+                "active": sid == self._session_id,
+                "created": s["created"], "last_active": s["last_active"],
+                "preview": (last[:50] + "…") if len(last) > 50 else last,
+                "count": len(msgs),
+            })
+        # Most recently active first
+        out.sort(key=lambda x: x["last_active"], reverse=True)
+        return out
+
+    def new_session(self, name: str | None = None) -> str:
+        import uuid, time as _t
+        sid = str(uuid.uuid4())[:8]
+        n = name or f"Chat {len(self._sessions) + 1}"
+        self._register_session(sid, n)
+        self._session_id = sid
+        self._emit({"type": "sessions", "sessions": self.list_sessions()})
+        logger.info("ui.bridge | nuova sessione '{}' ({})", n, sid)
+        return sid
+
+    def switch_session(self, sid: str) -> bool:
+        if sid not in self._sessions:
+            logger.warning("ui.bridge | sessione non trovata: {}", sid)
+            return False
+        self._session_id = sid
+        self._sessions[sid]["last_active"] = __import__("time").time()
+        self._emit({
+            "type": "session_switch",
+            "id": sid,
+            "messages": self._sessions[sid]["messages"],
+            "sessions": self.list_sessions(),
+        })
+        logger.info("ui.bridge | switch sessione → {}", sid)
+        return True
+
+    def delete_session(self, sid: str) -> bool:
+        if sid not in self._sessions or len(self._sessions) <= 1:
+            return False
+        del self._sessions[sid]
+        try:
+            self._orch.clear_session(sid)
+        except Exception:
+            pass
+        if self._session_id == sid:
+            # Switch to the most recently active remaining session
+            self._session_id = max(
+                self._sessions.items(),
+                key=lambda kv: kv[1].get("last_active", 0),
+            )[0]
+        self._persist()
+        self._emit({"type": "sessions", "sessions": self.list_sessions()})
+        return True
+
+    def rename_session(self, sid: str, name: str) -> bool:
+        if sid not in self._sessions:
+            return False
+        self._sessions[sid]["name"] = name.strip()[:40] or self._sessions[sid]["name"]
+        self._emit({"type": "sessions", "sessions": self.list_sessions()})
+        return True
+
+    def _record_message(self, role: str, text: str) -> None:
+        import time as _t
+        s = self._sessions.get(self._session_id)
+        if s is not None:
+            s["messages"].append({"role": role, "text": text, "ts": _t.time()})
+            s["last_active"] = _t.time()
+            self._persist()   # salva su disco dopo OGNI messaggio
+
+    # ── Personality ──────────────────────────────────────────────────
+    def list_personalities(self) -> list[dict]:
+        try:
+            pm = self._orch._personality
+            return [{"name":p.name,"display_name":p.display_name,"description":p.description}
+                    for p in [pm.get(n) for n in pm.list_profiles()]]
+        except Exception as e:
+            logger.warning("ui.bridge | list_personalities: {}", e); return []
+
+    @property
+    def active_personality(self) -> str:
+        try: return self._orch._personality.active.name
+        except: return "default"
+
+    def switch_personality(self, name: str) -> bool:
+        try:
+            self._orch.switch_personality(name)
+            p = self._orch._personality.active
+            self._emit({"type":"personality","name":p.name,"display_name":p.display_name})
+            return True
+        except KeyError:
+            logger.warning("ui.bridge | personality non trovata: {}", name); return False
+
+    # ── Model ────────────────────────────────────────────────────────
+    async def list_models(self) -> list[str]:
+        try: return await self._orch._llm.list_models()
+        except Exception as e:
+            logger.warning("ui.bridge | list_models: {}", e); return []
+
+    @property
+    def active_model(self) -> str:
+        from config.settings import settings
+        return settings.ollama.chat_model
+
+    def switch_model(self, name: str) -> bool:
+        try:
+            from config.settings import settings
+            settings.ollama.chat_model = name
+            self._emit({"type":"model","name":name})
+            logger.info("ui.bridge | modello → '{}'", name)
+            return True
+        except Exception as e:
+            logger.error("ui.bridge | switch_model: {}", e); return False
+
+    # ── Voice ───────────────────────────────────────────────────────────
+    async def list_voices(self) -> list[str]:
+        # Durante l'avvio lazy il TTS può non essere ancora pronto:
+        # ritorna [] senza loggare (non è un errore, è transitorio).
+        if self._tts is None:
+            return []
+        try: return await self._tts.available_profiles()
+        except Exception as e:
+            logger.warning("ui.bridge | list_voices: {}", e); return []
+
+    def _voice_fallback(self) -> str:
+        """
+        Voce di ripiego quando il server TTS non è ancora pronto.
+        Ordine: voce salvata in ui-settings.json → settings.tts.voice → "".
+        Non solleva mai eccezioni.
+        """
+        try:
+            from ui.server import _load_ui_settings
+            saved = (_load_ui_settings() or {}).get("voice")
+            if saved:
+                return saved
+        except Exception:
+            pass
+        try:
+            from config.settings import settings
+            return settings.tts.voice
+        except Exception:
+            return ""
+
+    async def active_voice_from_server(self) -> str:
+        """
+        Legge la voce attiva direttamente dal server TTS.
+        Se il TTS non è ancora caricato (avvio lazy), ritorna un
+        fallback sensato senza crashare — errore non fatale.
+        """
+        if self._tts is None:
+            return self._voice_fallback()
+        try:
+            r = await self._tts._http.get("/health")
+            r.raise_for_status()
+            return r.json().get("profile", self._tts._profile)
+        except Exception:
+            try:
+                return self._tts._profile
+            except Exception:
+                return self._voice_fallback()
+
+    @property
+    def active_voice(self) -> str:
+        if self._tts is None:
+            return self._voice_fallback()
+        try:
+            return self._tts._profile
+        except Exception:
+            return self._voice_fallback()
+
+    async def switch_voice(self, name: str) -> bool:
+        try:
+            r = await self._tts._http.post(f"/switch/{name}")
+            r.raise_for_status()
+            data = r.json()
+            # Server confirms the new active profile
+            confirmed = data.get("profile", name)
+            self._tts._profile = confirmed
+            self._emit({"type": "voice", "name": confirmed})
+            logger.info("ui.bridge | voce → '{}' (confermata: '{}')", name, confirmed)
+            return True
+        except Exception as e:
+            logger.error("ui.bridge | switch_voice '{}': {}", name, e)
+            return False
+
+    # ── PTT ──────────────────────────────────────────────────────────
+    async def send_text(self, text: str) -> None:
+        text = text.strip()
+        if not text: return
+        try: self._turn_queue.put_nowait(_TextMessage(text=text))
+        except asyncio.QueueFull: logger.warning("ui.bridge | queue piena")
+
+    def set_ptt_key(self, key_str: str) -> bool:
+        r = _resolve_key(key_str)
+        if r is None: return False
+        self._ptt_key_str = key_str; self._ptt_key_obj = r
+        self._emit({"type":"ptt_key","key":key_str})
+        return True
+
+    @property
+    def ptt_key(self): return self._ptt_key_str
+
+    # ── WS overrides ─────────────────────────────────────────────────
+    def _emit(self, payload: dict) -> None:
+        try: asyncio.get_running_loop().create_task(self._ws.broadcast(payload))
+        except RuntimeError: pass
+
+    def _set_state(self, state: str) -> None:
+        super()._set_state(state)
+        self._emit({"type":"state","value":state})
+
+    async def _process_turn(self, stt_result: Any) -> None:
+        """
+        Override completo di VoiceLoop._process_turn.
+        Identico al base ma aggiunge broadcast di testo utente,
+        statistiche e latenze dopo ogni turno.
+        """
+        from core.context import AssistantContext, InputMode, OutputMode
+        from core.voice_loop import _PTT_ECHO_GRACE_S
+
+        user_text = stt_result.text.strip()
+        if not user_text:
+            return
+
+        # Notifica UI del testo utente + registra nella sessione
+        self._record_message("user", user_text)
+        await self._ws.broadcast({
+            "type": "user", "text": user_text, "session": self._session_id
+        })
+
+        # ── Replica esatta di VoiceLoop._process_turn ──────────────────
+        self._is_speaking = True
+        self._set_state("thinking")
+        self._stats.turns += 1
+        self._stats.total_words_in += len(user_text.split())
+
+        print(f"\n{chr(8212)*50}")
+        print(f"\U0001f3a4  Tu:  {user_text}")
+        print(f"\U0001f916  Assistente: ", end="", flush=True)
+
+        ctx = AssistantContext(
+            user_text   = user_text,
+            session_id  = self._session_id,
+            input_mode  = InputMode.TEXT,
+            output_mode = OutputMode.TEXT,
+            model_role  = self._model_role,
+        )
+
+        try:
+            await self._stream_and_speak(ctx)
+        except Exception as exc:
+            logger.error("ui.bridge | _process_turn fallito: {}", exc)
+            print(f"\n  ⚠ Errore: {exc}")
+        finally:
+            self._is_speaking = False
+            if self._tts_last_play_end > 0:
+                self._echo_block_until = self._tts_last_play_end + _PTT_ECHO_GRACE_S
+            self._tts_last_play_end  = 0.0
+            self._tts_speaking_start = 0.0
+            self._set_state("listening")
+            self._stats.total_words_out += len(ctx.assistant_text.split())
+            if ctx.assistant_text.strip():
+                self._record_message("asst", ctx.assistant_text.strip())
+            print()
+            logger.info("ui.bridge | turno {} | {}", self._stats.turns, ctx.to_log_dict())
+
+            # ── Broadcast statistiche + latenze ───────────────────────────
+            llm_ms = self._last_llm_ms or None
+            stt_ms = self._last_stt_ms or None
+            tts_ms = self._last_tts_ms or None
+            total  = round(sum(v for v in [stt_ms, llm_ms, tts_ms] if v), 1)
+            await self._ws.broadcast({
+                "type":      "stats",
+                "turns":     self._stats.turns,
+                "words_in":  self._stats.total_words_in,
+                "words_out": self._stats.total_words_out,
+                "stt_errors":self._stats.stt_errors,
+                "tts_errors":self._stats.tts_errors,
+                "latency": {
+                    "stt_ms":   stt_ms,
+                    "llm_ms":   llm_ms,
+                    "tts_ms":   tts_ms,
+                    "total_ms": total,
+                },
+            })
+
+    async def _stream_and_speak(self, ctx: Any) -> None:
+        # ── LLM TTFT: time from request start to first chunk ─────────
+        stream_start     = time.monotonic()
+        first_chunk_time = None
+        orig_turn        = self._orch.turn
+
+        async def _patched_turn(c):
+            nonlocal first_chunk_time
+            async for chunk in orig_turn(c):
+                if first_chunk_time is None:
+                    first_chunk_time = time.monotonic()
+                self._emit({"type": "chunk", "text": chunk})
+                yield chunk
+        self._orch.turn = _patched_turn
+
+        # ── TTS: time from first synthesize() call to audio playback ─
+        first_synth_time = None
+        orig_synth       = None
+        if self._tts:
+            orig_synth = self._tts.synthesize
+            async def _timed_synth(text: str):
+                nonlocal first_synth_time
+                if first_synth_time is None:
+                    first_synth_time = time.monotonic()
+                return await orig_synth(text)
+            self._tts.synthesize = _timed_synth
+
+        try:
+            await super()._stream_and_speak(ctx)
+        finally:
+            self._orch.turn = orig_turn
+            if orig_synth is not None:
+                self._tts.synthesize = orig_synth
+
+            # TTFT
+            if first_chunk_time is not None:
+                self._last_llm_ms = round((first_chunk_time - stream_start) * 1000, 1)
+
+            # TTS first-audio: first_synth_time → _tts_speaking_start
+            # _tts_speaking_start is set by the player task when audio begins playing;
+            # it's still valid here because _process_turn resets it after we return.
+            if first_synth_time and self._tts_speaking_start > 0:
+                self._last_tts_ms = round(
+                    (self._tts_speaking_start - first_synth_time) * 1000, 1
+                )
+            else:
+                self._last_tts_ms = 0.0
+
+    async def _run_ptt(self) -> None:
+        import numpy as np, sounddevice as sd
+        from pynput import keyboard as kb
+        loop = asyncio.get_running_loop()
+        held = asyncio.Event()
+        def match(k): return self._ptt_key_obj is not None and k == self._ptt_key_obj
+        def on_press(k):
+            if match(k): loop.call_soon_threadsafe(held.set)
+        def on_release(k):
+            if match(k): loop.call_soon_threadsafe(held.clear)
+        listener = kb.Listener(on_press=on_press, on_release=on_release)
+        listener.start()
+        logger.info("ui.bridge | PTT attivo — tasto: '{}'", self._ptt_key_str)
+        try:
+            while not self._stop_event.is_set():
+                try: await asyncio.wait_for(held.wait(), timeout=0.5)
+                except asyncio.TimeoutError: continue
+                if self._stop_event.is_set(): break
+                if self._is_speaking or time.monotonic() < self._echo_block_until:
+                    while held.is_set(): await asyncio.sleep(0.02)
+                    continue
+                self._set_state(LoopState.RECORDING)
+                frames, t0 = [], time.monotonic()
+                stream = sd.InputStream(samplerate=_PTT_SAMPLE_RATE, channels=1, dtype="int16", blocksize=_PTT_BLOCK_SIZE)
+                stream.start()
+                try:
+                    while held.is_set() and not self._stop_event.is_set():
+                        data, _ = stream.read(_PTT_BLOCK_SIZE)
+                        frames.append(data.copy()); await asyncio.sleep(0.005)
+                finally: stream.stop(); stream.close()
+                dur = time.monotonic() - t0
+                self._set_state(LoopState.LISTENING)
+                if dur < _PTT_MIN_DURATION_S or not frames: continue
+                try:
+                    _t0_stt = time.monotonic()
+                    r = await self._stt.transcribe(np.concatenate(frames).tobytes())
+                    self._last_stt_ms = round((time.monotonic() - _t0_stt) * 1000, 1)
+                    if not r.is_empty():
+                        try: self._turn_queue.put_nowait(r)
+                        except asyncio.QueueFull: pass
+                except Exception as e:
+                    self._stats.stt_errors += 1; logger.error("ui.bridge | STT: {}", e)
+        finally: listener.stop()
