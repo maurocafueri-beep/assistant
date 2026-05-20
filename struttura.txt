@@ -1,188 +1,153 @@
-.
-├── api
-│   ├── __init__.py
-│   └── routes
-│       └── __init__.py
-├── config
-│   ├── __init__.py
-│   ├── personalities
+# Struttura del progetto local-assistant
+# Aggiornata il 2026-05-20
+# Esclusi: venv-*, vendor/ (repo git a sé), __pycache__, cache HF/torch, .git
+#
+# Legenda: '/' = directory, '*' = eseguibile
+
+./
+├── api/
+│   ├── routes/
+│   │   └── __init__.py
+│   └── __init__.py
+├── config/
+│   ├── personalities/
 │   │   ├── default.yaml
 │   │   ├── dev.yaml
 │   │   └── Gwen.yml
-│   ├── __pycache__
-│   │   ├── __init__.cpython-312.pyc
-│   │   └── settings.cpython-312.pyc
+│   ├── __init__.py
 │   └── settings.py
-├── core
+├── core/
 │   ├── context.py
 │   ├── __init__.py
 │   ├── logger.py
 │   ├── orchestrator.py
-│   ├── __pycache__
-│   │   ├── context.cpython-312.pyc
-│   │   ├── __init__.cpython-312.pyc
-│   │   ├── logger.cpython-312.pyc
-│   │   ├── orchestrator.cpython-312.pyc
-│   │   └── voice_loop.cpython-312.pyc
 │   └── voice_loop.py
-├── data
-│   ├── Conversations
-│   ├── embeddings
-│   │   ├── 5a4d952e-9f54-4b8a-9c45-a06e94878103
+├── data/
+│   ├── Conversations/
+│   ├── embeddings/
+│   │   ├── 5a4d952e-9f54-4b8a-9c45-a06e94878103/
 │   │   │   ├── data_level0.bin
 │   │   │   ├── header.bin
 │   │   │   ├── length.bin
 │   │   │   └── link_lists.bin
 │   │   └── chroma.sqlite3
-│   ├── models
-│   │   └── lora
-│   ├── speaker_profiles
-│   ├── training_datasets
-│   ├── tts_smoke_output.wav
-│   └── voice_profiles
-│       ├── cloe
-│       │   ├── profile.yaml
-│       │   └── ref_audio.ogg
-│       ├── diego
-│       │   ├── profile.yaml
-│       │   └── ref_audio.ogg
-│       ├── marco
-│       │   ├── profile.yaml
-│       │   └── ref_audio.ogg
-│       ├── mercoledì
-│       │   ├── Mercoledì_Voce.mp3
-│       │   └── profile.yaml
-│       ├── simioni
-│       │   ├── profile.yaml
-│       │   └── ref_audio.ogg
-│       ├── simona
-│       │   ├── profile.yaml
-│       │   └── ref_audio.wav
-│       └── squib
-│           ├── profile.yaml
-│           └── Squib_sample.ogg
-├── docker
-│   ├── docker-compose.yml
-│   └── searxng
-│       └── settings.yml
-├── __init__.py
-├── logs
-├── Makefile
-├── modules
-│   ├── file_analysis
+│   ├── models/
+│   │   └── lora/
+│   ├── speaker_profiles/
+│   ├── training_datasets/
+│   ├── voice_profiles/
+│   │   ├── cloe/
+│   │   │   ├── profile.yaml
+│   │   │   └── ref_audio.ogg
+│   │   ├── diego/
+│   │   │   ├── profile.yaml
+│   │   │   └── ref_audio.ogg
+│   │   ├── marco/
+│   │   │   ├── profile.yaml
+│   │   │   └── ref_audio.ogg
+│   │   ├── mercoledì/
+│   │   │   ├── Mercoledì_Voce.mp3
+│   │   │   └── profile.yaml
+│   │   ├── simioni/
+│   │   │   ├── profile.yaml
+│   │   │   └── ref_audio.ogg
+│   │   ├── simona/
+│   │   │   ├── profile.yaml
+│   │   │   └── ref_audio.wav
+│   │   └── squib/
+│   │       ├── profile.yaml
+│   │       └── Squib_sample.ogg
+│   └── tts_smoke_output.wav
+├── docker/
+│   ├── searxng/
+│   │   └── settings.yml
+│   └── docker-compose.yml
+├── logs/
+│   ├── assistant.log
+│   └── errors.log
+├── modules/
+│   ├── file_analysis/
 │   │   └── __init__.py
-│   ├── gaming
+│   ├── gaming/
 │   │   ├── base_gaming.py
 │   │   └── __init__.py
-│   ├── llm
+│   ├── llm/
 │   │   ├── base_llm.py
-│   │   ├── __init__.py
-│   │   └── __pycache__
-│   │       ├── base.cpython-312.pyc
-│   │       ├── base_llm.cpython-312.pyc
-│   │       └── __init__.cpython-312.pyc
-│   ├── memory
+│   │   └── __init__.py
+│   ├── memory/
 │   │   ├── base_memory.py
-│   │   ├── __init__.py
-│   │   └── __pycache__
-│   │       ├── base_memory.cpython-312.pyc
-│   │       └── __init__.cpython-312.pyc
-│   ├── pc_control
+│   │   └── __init__.py
+│   ├── pc_control/
 │   │   ├── base_pc_control.py
 │   │   └── __init__.py
-│   ├── personality
+│   ├── personality/
 │   │   ├── base_personality.py
-│   │   ├── __init__.py
-│   │   └── __pycache__
-│   │       ├── base_personality.cpython-312.pyc
-│   │       └── __init__.cpython-312.pyc
-│   ├── speaker_id
+│   │   └── __init__.py
+│   ├── speaker_id/
 │   │   ├── base_speaker_id.py
 │   │   └── __init__.py
-│   ├── stt
+│   ├── stt/
 │   │   ├── base_stt.py
-│   │   ├── __init__.py
-│   │   └── __pycache__
-│   │       ├── base_stt.cpython-312.pyc
-│   │       └── __init__.cpython-312.pyc
-│   ├── tts
+│   │   └── __init__.py
+│   ├── tts/
 │   │   ├── base_tts.py
 │   │   ├── __init__.py
-│   │   ├── __pycache__
-│   │   │   ├── base_tts.cpython-312.pyc
-│   │   │   └── __init__.cpython-312.pyc
 │   │   └── server.py
-│   ├── wake_word
+│   ├── wake_word/
 │   │   └── __init__.py
-│   └── web_search
+│   └── web_search/
 │       ├── base_web_search.py
 │       └── __init__.py
-├── __pycache__
-│   └── __init__.cpython-312.pyc
-├── pyproject.toml
-├── requirements-runtime.txt
-├── requirements-training.txt
-├── scripts
-│   ├── check_health.py
+├── scripts/
+│   ├── Smoke tests/
+│   │   ├── smoke_llm.py
+│   │   ├── smoke_memory.py
+│   │   ├── smoke_orchestrator.py
+│   │   ├── smoke_personality.py
+│   │   ├── smoke_stt.py
+│   │   ├── smoke_tts.py
+│   │   └── smoke_web_search.py
+│   ├── check_health.py*
 │   ├── generate_icon.sh
 │   ├── run_app.py
 │   ├── run_ui.py
-│   ├── run_voice.py
-│   └── Smoke tests
-│       ├── smoke_llm.py
-│       ├── smoke_memory.py
-│       ├── smoke_orchestrator.py
-│       ├── smoke_personality.py
-│       ├── smoke_stt.py
-│       ├── smoke_tts.py
-│       └── smoke_web_search.py
-├── structure.txt
-├── struttura.txt
-├── tests
+│   └── run_voice.py
+├── tests/
 │   ├── conftest.py
 │   ├── __init__.py
-│   ├── __pycache__
-│   │   ├── conftest.cpython-312-pytest-9.0.3.pyc
-│   │   ├── __init__.cpython-312.pyc
-│   │   ├── test_llm.cpython-312-pytest-9.0.3.pyc
-│   │   ├── test_memory.cpython-312-pytest-9.0.3.pyc
-│   │   ├── test_orchestrator.cpython-312-pytest-9.0.3.pyc
-│   │   ├── test_pc_control.cpython-312-pytest-9.0.3.pyc
-│   │   ├── test_personality.cpython-312-pytest-9.0.3.pyc
-│   │   ├── test_speaker_id.cpython-312-pytest-9.0.3.pyc
-│   │   ├── test_stt.cpython-312-pytest-9.0.3.pyc
-│   │   ├── test_tts.cpython-312-pytest-9.0.3.pyc
-│   │   └── test_web_search.cpython-312-pytest-9.0.3.pyc
 │   ├── test_llm.py
 │   ├── test_memory.py
 │   ├── test_orchestrator.py
+│   ├── test_orchestrator_web_search.py
 │   ├── test_pc_control.py
 │   ├── test_personality.py
 │   ├── test_speaker_id.py
 │   ├── test_stt.py
 │   ├── test_tts.py
 │   └── test_web_search.py
-├── tools
+├── tools/
 │   └── tts_studio.py
-├── training
-│   ├── datasets
+├── training/
+│   ├── datasets/
 │   └── __init__.py
-├── tts_studio.sh
-└── ui
-    ├── app.py
-    ├── assets
-    │   └── icon.png
-    ├── bridge.py
-    ├── __init__.py
-    ├── __pycache__
-    │   ├── app.cpython-312.pyc
-    │   ├── bridge.cpython-312.pyc
-    │   ├── __init__.cpython-312.pyc
-    │   └── server.cpython-312.pyc
-    ├── server.py
-    └── static
-        └── index.html
-├── venv-runtime/
-├── venv-training/
-├── venv-tts/
-└── vendor/
+├── ui/
+│   ├── assets/
+│   │   └── icon.png
+│   ├── static/
+│   │   └── index.html
+│   ├── app.py
+│   ├── bridge.py
+│   ├── __init__.py
+│   └── server.py
+├── .env
+├── .env.example
+├── .gitignore
+├── __init__.py
+├── Makefile
+├── pyproject.toml
+├── requirements-runtime.txt
+├── requirements-training.txt
+├── struttura.txt
+└── tts_studio.sh*
+
+46 directories, 99 files
