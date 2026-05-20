@@ -101,13 +101,12 @@ body{
 .rail-cfg:hover .rail-cfg-val{color:var(--t2)}
 .rail-cfg.on{background:var(--ac-d);color:var(--ac)}
 .rail-cfg.on .rail-cfg-val{color:var(--ac)}
-/* TTS spento: icona/etichetta attenuate + barra diagonale sull'altoparlante */
-.rail-cfg.tts-off{color:var(--t4);position:relative}
-.rail-cfg.tts-off .rail-cfg-val{color:var(--t4)}
-.rail-cfg.tts-off::after{
-  content:"";position:absolute;top:8px;left:50%;width:24px;height:1.8px;
-  background:currentColor;transform:translateX(-50%) rotate(-45deg);transform-origin:center;
-  opacity:.85;border-radius:2px;
+/* TTS spento: icona attenuata + barra diagonale sull'altoparlante */
+.icon-act.tts-off{color:var(--t4);position:relative}
+.icon-act.tts-off::after{
+  content:"";position:absolute;top:50%;left:50%;width:22px;height:1.8px;
+  background:currentColor;transform:translate(-50%,-50%) rotate(-45deg);
+  opacity:.9;border-radius:2px;pointer-events:none;
 }
 /* Selettore voce disabilitato quando il TTS è spento */
 .rail-cfg.is-disabled{opacity:.4;cursor:not-allowed;pointer-events:auto}
@@ -558,11 +557,6 @@ body.sel-open .copy-btn{pointer-events:none!important;opacity:0!important}
       <span class="rail-cfg-val" id="voice-cur">…</span>
     </button>
 
-    <button class="rail-btn rail-cfg" id="sel-tts" title="Sintesi vocale (voce dell'assistente)">
-      <svg id="tts-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14"/></svg>
-      <span class="rail-cfg-val" id="tts-cur">Voce ON</span>
-    </button>
-
     <button class="rail-btn rail-cfg" id="sel-ptt" title="Push-to-talk">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="12" rx="3"/><path d="M7 11h.01M11 11h.01M15 11h.01M8 15h8"/></svg>
       <span class="rail-cfg-val" id="ptt-cur">SPACE</span>
@@ -626,6 +620,9 @@ body.sel-open .copy-btn{pointer-events:none!important;opacity:0!important}
         <div class="chat-hd-status"><span class="sdot"></span><span id="hd-status">inattivo</span></div>
       </div>
       <div class="chat-hd-actions">
+        <button class="icon-act" id="sel-tts" title="Voce assistente: attiva">
+          <svg id="tts-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14"/></svg>
+        </button>
         <button class="icon-act" id="hd-pal" title="Comandi (Ctrl+K)">⌘</button>
         <button class="icon-act" id="hd-more" title="Esporta chat">↓</button>
       </div>
@@ -671,7 +668,7 @@ const hdStatus=$('hd-status');
 const stT=$('st-t'),stW=$('st-w'),stSe=$('st-se'),stTe=$('st-te');
 const lb1=$('lb1'),lb2=$('lb2'),lb3=$('lb3'),lv1=$('lv1'),lv2=$('lv2'),lv3=$('lv3');
 const modelCur=$('model-cur'),persCur=$('pers-cur');
-const voiceCur=$('voice-cur'),pttCur=$('ptt-cur'),ttsCur=$('tts-cur');
+const voiceCur=$('voice-cur'),pttCur=$('ptt-cur');
 const palette=$('palette'),palIn=$('pal-in'),palRs=$('pal-rs');
 
 let ws=null,reconn=null,capPTT=false,curRow=null,streamTxt='';
@@ -753,8 +750,9 @@ $('sel-voice').addEventListener('click',e=>{e.stopPropagation();if(!ttsEnabled){
 /* TTS on/off — la chat testuale resta attiva in ogni caso */
 function setTTS(on){
   ttsEnabled=!!on;
-  ttsCur.textContent=ttsEnabled?'Voce ON':'Voce OFF';
-  $('sel-tts').classList.toggle('tts-off',!ttsEnabled);
+  const b=$('sel-tts');
+  b.classList.toggle('tts-off',!ttsEnabled);
+  b.title='Voce assistente: '+(ttsEnabled?'attiva':'disattivata (solo testo)');
   // Selettore voce disabilitato quando il TTS è spento
   $('sel-voice').classList.toggle('is-disabled',!ttsEnabled);
   if(!ttsEnabled)closeSel();
