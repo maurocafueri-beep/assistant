@@ -63,6 +63,7 @@ class PTTBody(BaseModel):    key: str
 class PersBody(BaseModel):   name: str
 class ModelBody(BaseModel):  name: str
 class VoiceBody(BaseModel):  name: str
+class TTSBody(BaseModel):    enabled: bool
 
 def create_app(ws_manager: "WSManager") -> tuple[FastAPI, dict]:
     app   = FastAPI(title="local-assistant", docs_url=None, redoc_url=None)
@@ -87,6 +88,7 @@ def create_app(ws_manager: "WSManager") -> tuple[FastAPI, dict]:
                 "model":loop.active_model,
                 "voice":await loop.active_voice_from_server(),
                 "voices":await loop.list_voices(),
+                "tts_enabled":loop.tts_enabled,
                 "stats":loop.stats.to_log_dict(),
             }))
         try:
@@ -102,6 +104,7 @@ def create_app(ws_manager: "WSManager") -> tuple[FastAPI, dict]:
             "ptt_key":loop.ptt_key,"personality":loop.active_personality,"model":loop.active_model,
                 "voice":await loop.active_voice_from_server(),
                 "voices":await loop.list_voices(),
+                "tts_enabled":loop.tts_enabled,
             "stats":loop.stats.to_log_dict()})
 
     @app.post("/api/send")
@@ -201,6 +204,14 @@ def create_app(ws_manager: "WSManager") -> tuple[FastAPI, dict]:
         if not ok: return JSONResponse({"ok":False,"error":f"voce non trovata: {body.name!r}"},status_code=404)
         _save_ui_settings({"voice": body.name})
         return JSONResponse({"ok":True,"name":body.name})
+
+    @app.post("/api/tts")
+    async def tts_toggle(body: TTSBody):
+        loop = state["loop"]
+        if loop is None: return JSONResponse({"ok":False,"error":"loop non pronto"},status_code=503)
+        loop.set_tts_enabled(body.enabled)
+        _save_ui_settings({"tts_enabled": body.enabled})
+        return JSONResponse({"ok":True,"enabled":body.enabled})
 
     @app.post("/api/model")
     async def model(body: ModelBody):

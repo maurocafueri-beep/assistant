@@ -275,6 +275,18 @@ class UIBridge(VoiceLoop):
             logger.error("ui.bridge | switch_voice '{}': {}", name, e)
             return False
 
+    # ── TTS on/off ───────────────────────────────────────────────────
+    def set_tts_enabled(self, enabled: bool) -> bool:
+        """
+        Attiva/disattiva la sintesi vocale per i turni successivi.
+        La chat testuale con l'LLM continua a funzionare in entrambi i casi.
+        Notifica la UI via WebSocket. Ritorna sempre True (operazione locale).
+        """
+        self._tts_enabled = bool(enabled)
+        self._emit({"type": "tts", "enabled": self._tts_enabled})
+        logger.info("ui.bridge | TTS {}", "attivo" if self._tts_enabled else "disattivato")
+        return True
+
     # ── PTT ──────────────────────────────────────────────────────────
     async def send_text(self, text: str) -> None:
         text = text.strip()

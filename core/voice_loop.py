@@ -210,6 +210,7 @@ class VoiceLoop:
         self._tts:  Optional[Any]          = None
 
         self._state:              str            = LoopState.IDLE
+        self._tts_enabled:        bool           = True
         self._is_speaking:        bool           = False
         self._echo_block_until:   float          = 0.0
         self._tts_last_play_end:  float          = 0.0
@@ -318,6 +319,15 @@ class VoiceLoop:
     @property
     def state(self) -> str:
         return self._state
+
+    @property
+    def tts_enabled(self) -> bool:
+        """True se la sintesi vocale è attiva per i turni successivi."""
+        return self._tts_enabled
+
+    @tts_enabled.setter
+    def tts_enabled(self, value: bool) -> None:
+        self._tts_enabled = bool(value)
 
     @property
     def session_id(self) -> str:
@@ -521,7 +531,7 @@ class VoiceLoop:
         player_task = asyncio.create_task(_player())
 
         async def _synth(text: str) -> None:
-            if not self._tts:
+            if not self._tts or not self._tts_enabled:
                 return
             clean = _strip_markdown(text)
             if not clean:

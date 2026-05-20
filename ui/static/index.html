@@ -101,6 +101,18 @@ body{
 .rail-cfg:hover .rail-cfg-val{color:var(--t2)}
 .rail-cfg.on{background:var(--ac-d);color:var(--ac)}
 .rail-cfg.on .rail-cfg-val{color:var(--ac)}
+/* TTS spento: icona/etichetta attenuate + barra diagonale sull'altoparlante */
+.rail-cfg.tts-off{color:var(--t4);position:relative}
+.rail-cfg.tts-off .rail-cfg-val{color:var(--t4)}
+.rail-cfg.tts-off::after{
+  content:"";position:absolute;top:8px;left:50%;width:24px;height:1.8px;
+  background:currentColor;transform:translateX(-50%) rotate(-45deg);transform-origin:center;
+  opacity:.85;border-radius:2px;
+}
+/* Selettore voce disabilitato quando il TTS è spento */
+.rail-cfg.is-disabled{opacity:.4;cursor:not-allowed;pointer-events:auto}
+.rail-cfg.is-disabled:hover{background:transparent}
+.rail-cfg.is-disabled:hover .rail-cfg-val{color:var(--t4)}
 .rail-avatar{
   width:42px;height:42px;border-radius:50%;
   background:var(--card);border:1px solid var(--b1);
@@ -546,6 +558,11 @@ body.sel-open .copy-btn{pointer-events:none!important;opacity:0!important}
       <span class="rail-cfg-val" id="voice-cur">…</span>
     </button>
 
+    <button class="rail-btn rail-cfg" id="sel-tts" title="Sintesi vocale (voce dell'assistente)">
+      <svg id="tts-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14"/></svg>
+      <span class="rail-cfg-val" id="tts-cur">Voce ON</span>
+    </button>
+
     <button class="rail-btn rail-cfg" id="sel-ptt" title="Push-to-talk">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="12" rx="3"/><path d="M7 11h.01M11 11h.01M15 11h.01M8 15h8"/></svg>
       <span class="rail-cfg-val" id="ptt-cur">SPACE</span>
@@ -654,11 +671,11 @@ const hdStatus=$('hd-status');
 const stT=$('st-t'),stW=$('st-w'),stSe=$('st-se'),stTe=$('st-te');
 const lb1=$('lb1'),lb2=$('lb2'),lb3=$('lb3'),lv1=$('lv1'),lv2=$('lv2'),lv3=$('lv3');
 const modelCur=$('model-cur'),persCur=$('pers-cur');
-const voiceCur=$('voice-cur'),pttCur=$('ptt-cur');
+const voiceCur=$('voice-cur'),pttCur=$('ptt-cur'),ttsCur=$('tts-cur');
 const palette=$('palette'),palIn=$('pal-in'),palRs=$('pal-rs');
 
 let ws=null,reconn=null,capPTT=false,curRow=null,streamTxt='';
-let personalities=[],activePers=null,models=[],activeModel=null,voices=[],activeVoice=null;
+let personalities=[],activePers=null,models=[],activeModel=null,voices=[],activeVoice=null,ttsEnabled=true;
 let isDark=true,palOpen=false,palSel=0;
 const hist=[];
 
@@ -731,7 +748,25 @@ function renderVoices(){const P=_getPanel($('sel-voice'));P.innerHTML='';voices.
 function setActiveVoice(n){activeVoice=n;voiceCur.textContent=n||'—';const vp=_panels.get($('sel-voice'));if(vp)vp.querySelectorAll('.sel-item').forEach(el=>el.classList.toggle('active',el.dataset.name===n))}
 async function switchVoice(n){if(n===activeVoice)return;try{const r=await fetch('/api/voice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n})});if(r.ok){setActiveVoice(n);showToast('Voce: '+n)}}catch(e){console.warn(e)}}
 async function loadVoices(rt=5){try{const r=await fetch('/api/voices');const d=await r.json();if(d.voices&&d.voices.length){voices=d.voices;if(d.active)setActiveVoice(d.active);renderVoices()}else if(rt>0)setTimeout(()=>loadVoices(rt-1),2000)}catch(e){if(rt>0)setTimeout(()=>loadVoices(rt-1),2000)}}
-$('sel-voice').addEventListener('click',e=>{e.stopPropagation();toggleSel($('sel-voice'))});
+$('sel-voice').addEventListener('click',e=>{e.stopPropagation();if(!ttsEnabled){showToast('Attiva la voce per cambiarla');return}toggleSel($('sel-voice'))});
+
+/* TTS on/off — la chat testuale resta attiva in ogni caso */
+function setTTS(on){
+  ttsEnabled=!!on;
+  ttsCur.textContent=ttsEnabled?'Voce ON':'Voce OFF';
+  $('sel-tts').classList.toggle('tts-off',!ttsEnabled);
+  // Selettore voce disabilitato quando il TTS è spento
+  $('sel-voice').classList.toggle('is-disabled',!ttsEnabled);
+  if(!ttsEnabled)closeSel();
+}
+async function toggleTTS(){
+  const next=!ttsEnabled;
+  try{
+    const r=await fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:next})});
+    if(r.ok){setTTS(next);showToast(next?'Voce attivata':'Voce disattivata — solo testo')}
+  }catch(e){console.warn(e)}
+}
+$('sel-tts').addEventListener('click',e=>{e.stopPropagation();toggleTTS()});
 
 /* PTT */
 function setPTT(k){const d=k.toUpperCase().replace('_L','←').replace('_R','→');pttCur.textContent=d}
@@ -943,7 +978,7 @@ async function exportChat(){
 $('hd-more').addEventListener('click',exportChat);
 
 /* Palette */
-const CMDS=[{ic:'✦',lb:'Nuova sessione',sb:'Ctrl+N',ac:newSess},{ic:'↓',lb:'Esporta chat',sb:'Ctrl+E',ac:exportChat},{ic:'🌙',lb:'Cambia tema',sb:'T',ac:()=>setTheme(!isDark)},{ic:'🎙',lb:'Cambia tasto PTT',sb:'',ac:()=>{closePal();startCap()}}];
+const CMDS=[{ic:'✦',lb:'Nuova sessione',sb:'Ctrl+N',ac:newSess},{ic:'↓',lb:'Esporta chat',sb:'Ctrl+E',ac:exportChat},{ic:'🌙',lb:'Cambia tema',sb:'T',ac:()=>setTheme(!isDark)},{ic:'🔊',lb:'Voce assistente (on/off)',sb:'',ac:toggleTTS},{ic:'🎙',lb:'Cambia tasto PTT',sb:'',ac:()=>{closePal();startCap()}}];
 function buildPal(q=''){const f=q.toLowerCase().trim(),items=[];const c=CMDS.filter(x=>!f||x.lb.toLowerCase().includes(f));if(c.length){items.push({t:'s',lb:'Azioni'});c.forEach(x=>items.push({t:'c',...x}))}const p=personalities.filter(x=>!f||(x.display_name||x.name).toLowerCase().includes(f));if(p.length){items.push({t:'s',lb:'Personalità'});p.forEach((x,i)=>items.push({t:'p',ic:PEM[i%PEM.length],lb:x.display_name||x.name,nm:x.name}))}const m=models.filter(x=>!f||x.toLowerCase().includes(f));if(m.length){items.push({t:'s',lb:'Modelli'});m.forEach(x=>items.push({t:'m',ic:'🧠',lb:x,nm:x}))}const v=voices.filter(x=>!f||x.toLowerCase().includes(f));if(v.length){items.push({t:'s',lb:'Voci'});v.forEach(x=>items.push({t:'v',ic:'🎤',lb:x,nm:x}))}return items}
 function renderPal(q=''){palSel=0;const it=buildPal(q);palRs.innerHTML='';let i=0;it.forEach(x=>{if(x.t==='s'){const s=document.createElement('div');s.className='pit-sc';s.textContent=x.lb;palRs.appendChild(s);return}const d=document.createElement('div');d.className='pit'+(i===0?' sel':'');d.innerHTML=`<div class="pit-ic">${x.ic}</div><div class="pit-lb">${esc(x.lb)}</div>${x.sb?`<div class="pit-sb">${esc(x.sb)}</div>`:''}`;d.addEventListener('click',()=>runPal(x));palRs.appendChild(d);i++})}
 function runPal(x){closePal();if(x.t==='c')x.ac();else if(x.t==='p')switchPers(x.nm);else if(x.t==='m')switchModel(x.nm);else if(x.t==='v')switchVoice(x.nm)}
@@ -984,6 +1019,7 @@ function connect(){
         if(m.model)setActiveModel(m.model);
         if(m.voices){voices=m.voices;renderVoices()}
         if(m.voice)setActiveVoice(m.voice);
+        if(m.tts_enabled!=null)setTTS(m.tts_enabled);
         if(m.stats)updStats(m.stats);
         // Renderizza subito i messaggi della sessione attiva
         if(m.active_messages&&m.active_messages.length){
@@ -1003,6 +1039,7 @@ function connect(){
       case 'personality':setActivePers(m.name);break;
       case 'model':setActiveModel(m.name);break;
       case 'voice':if(m.name)setActiveVoice(m.name);break;
+      case 'tts':if(m.enabled!=null)setTTS(m.enabled);break;
       case 'ptt_key':if(m.key)setPTT(m.key);break;
       case 'sessions':if(m.sessions){sessions=m.sessions;renderSessions()}break;
       case 'session_switch':

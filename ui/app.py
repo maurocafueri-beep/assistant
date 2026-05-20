@@ -179,6 +179,17 @@ class _AsyncWorker(QObject):
                         saved_voice,
                     )
 
+                saved_tts = s.get("tts_enabled")
+                if saved_tts is not None:
+                    try:
+                        ui_loop.set_tts_enabled(bool(saved_tts))
+                        logger.info(
+                            "ui.app | TTS ripristinato → {}",
+                            "attivo" if saved_tts else "disattivato",
+                        )
+                    except Exception as exc:
+                        logger.warning("ui.app | restore tts_enabled: {}", exc)
+
             async with ui_loop:
                 # ui_loop.load() è stato eseguito da __aenter__:
                 # ora _orch e _tts sono pronti → ripristino sicuro.
