@@ -101,10 +101,20 @@ body{
 .rail-cfg:hover .rail-cfg-val{color:var(--t2)}
 .rail-cfg.on{background:var(--ac-d);color:var(--ac)}
 .rail-cfg.on .rail-cfg-val{color:var(--ac)}
+/* Toggle voce nel box di input — piatto come l'allega, icona compatta */
+.itts{
+  width:38px;height:38px;border-radius:11px;border:none;flex-shrink:0;
+  background:transparent;color:var(--t3);cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  transition:background .14s,color .14s,transform .12s var(--spring);
+}
+.itts svg{width:17px;height:17px}
+.itts:hover{background:var(--card-h);color:var(--t1)}
+.itts:active{transform:scale(.88)}
 /* TTS spento: icona attenuata + barra diagonale sull'altoparlante */
-.icon-act.tts-off{color:var(--t4);position:relative}
-.icon-act.tts-off::after{
-  content:"";position:absolute;top:50%;left:50%;width:22px;height:1.8px;
+.itts.tts-off{color:var(--t4);position:relative}
+.itts.tts-off::after{
+  content:"";position:absolute;top:50%;left:50%;width:20px;height:1.7px;
   background:currentColor;transform:translate(-50%,-50%) rotate(-45deg);
   opacity:.9;border-radius:2px;pointer-events:none;
 }
@@ -620,9 +630,6 @@ body.sel-open .copy-btn{pointer-events:none!important;opacity:0!important}
         <div class="chat-hd-status"><span class="sdot"></span><span id="hd-status">inattivo</span></div>
       </div>
       <div class="chat-hd-actions">
-        <button class="icon-act" id="sel-tts" title="Voce assistente: attiva">
-          <svg id="tts-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14"/></svg>
-        </button>
         <button class="icon-act" id="hd-pal" title="Comandi (Ctrl+K)">⌘</button>
         <button class="icon-act" id="hd-more" title="Esporta chat">↓</button>
       </div>
@@ -640,6 +647,9 @@ body.sel-open .copy-btn{pointer-events:none!important;opacity:0!important}
         <button class="iattach" title="Allega (presto)">📎</button>
         <div class="wrec" id="wrec"><div class="wr"></div><div class="wr"></div><div class="wr"></div><div class="wr"></div><div class="wr"></div></div>
         <textarea id="itxt" class="itxt" placeholder="Scrivi un messaggio…" rows="1"></textarea>
+        <button class="itts" id="sel-tts" title="Voce assistente: attiva">
+          <svg id="tts-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14"/></svg>
+        </button>
         <button class="imic" id="imic" title="Clicca per cambiare tasto PTT">🎙</button>
         <button class="isend" id="isend" title="Invia">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
