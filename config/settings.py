@@ -107,7 +107,7 @@ class Settings(BaseSettings):
         for d in [
             self.data_dir, self.log_dir,
             self.data_dir / "embeddings", self.data_dir / "speaker_profiles",
-            self.data_dir / "conversations", self.data_dir / "models" / "lora",
+            self.data_dir / "Conversations", self.data_dir / "models" / "lora",
             self.personality.config_dir,
         ]:
             d.mkdir(parents=True, exist_ok=True)

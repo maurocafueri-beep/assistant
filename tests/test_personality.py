@@ -429,8 +429,8 @@ class TestPersonalityManagerReal:
         ctx = AssistantContext()
         async with PersonalityManager() as pm:
             pm.apply_to_context(ctx)
-        assert ctx.personality_name in pm.list_profiles()
-        assert ctx.system_prompt
+            assert ctx.personality_name in pm.list_profiles()
+            assert ctx.system_prompt
 
     async def test_dev_system_prompt_not_empty(self):
         async with PersonalityManager() as pm:
