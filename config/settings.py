@@ -72,6 +72,38 @@ class PCControlSettings(BaseSettings):
             return [d.strip() for d in v.split(",")]
         return v
 
+class TerminalAgentSettings(BaseSettings):
+    """Configurazione del terminale agentico (modules/terminal_agent)."""
+    model_config = SettingsConfigDict(env_prefix="TERMINAL_AGENT_")
+
+    # Modello LLM: "chat" -> qwen3.5:9b-q8_0, "code" -> qwen3.6:35b-a3b
+    model_role: Literal["chat", "code"] = "chat"
+    use_thinking: bool = True
+
+    # Esecuzione comando
+    command_timeout: int = Field(30, ge=1, le=600)
+    max_output_bytes: int = Field(64 * 1024, ge=1024)
+
+    # Loop agentico (ReAct)
+    max_iterations: int = Field(4, ge=1, le=10)
+    enable_web_search: bool = True
+    max_search_results: int = Field(5, ge=1, le=20)
+
+    # Sicurezza: None = eredita da pc_control
+    allow_sudo: bool | None = None
+    allow_delete: bool | None = None
+    safe_dirs: list[str] | None = None
+    initial_cwd: str = ""
+
+    @field_validator("safe_dirs", mode="before")
+    @classmethod
+    def parse_dirs(cls, v):
+        if v is None or v == "":
+            return None
+        if isinstance(v, str):
+            return [d.strip() for d in v.split(",") if d.strip()]
+        return v
+
 class PersonalitySettings(BaseSettings):
     default_personality: str = Field("default", alias="DEFAULT_PERSONALITY")
     config_dir: Path = PROJECT_ROOT / "config" / "personalities"
@@ -100,6 +132,7 @@ class Settings(BaseSettings):
     memory: MemorySettings = Field(default_factory=MemorySettings)
     web_search: WebSearchSettings = Field(default_factory=WebSearchSettings)
     pc_control: PCControlSettings = Field(default_factory=PCControlSettings)
+    terminal_agent: TerminalAgentSettings = Field(default_factory=TerminalAgentSettings)
     personality: PersonalitySettings = Field(default_factory=PersonalitySettings)
     api: APISettings = Field(default_factory=APISettings)
 
