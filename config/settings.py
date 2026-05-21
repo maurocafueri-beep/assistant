@@ -78,7 +78,8 @@ class TerminalAgentSettings(BaseSettings):
 
     # Modello LLM: "chat" -> qwen3.5:9b-q8_0, "code" -> qwen3.6:35b-a3b
     model_role: Literal["chat", "code"] = "chat"
-    use_thinking: bool = True
+    use_thinking_propose: bool = True
+    use_thinking_analyze: bool = False
 
     # Esecuzione comando
     command_timeout: int = Field(30, ge=1, le=600)

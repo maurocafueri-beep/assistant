@@ -485,16 +485,20 @@ Niente testo fuori dal JSON. Nessun commento, nessuna spiegazione esterna.
 """
 
 
-_ANALYSIS_PROMPT_TEMPLATE = """L'utente ti aveva chiesto: "{request}"
+_ANALYSIS_PROMPT_TEMPLATE = """Sei un analista di terminale. Stile: asciutto, tecnico, telegrafico.
+NIENTE elogi del comando, NIENTE consigli ovvi (es. "puoi verificare con ls"),
+NIENTE chiusure decorative ("ottimo!", "perfetto!"). Vai dritto al punto.
 
-Hai proposto ed eseguito questo comando:
+L'utente ti aveva chiesto: "{request}"
+
+Comando eseguito:
     $ {command}
-    (in cwd: {cwd_before})
+    (cwd: {cwd_before})
 
 Esito:
 - exit code: {exit_code}
-- duration: {duration_ms:.0f}ms
-- cwd dopo l'esecuzione: {cwd_after}
+- duration:  {duration_ms:.0f}ms
+- cwd dopo:  {cwd_after}
 
 STDOUT{stdout_truncated_note}:
 {stdout}
@@ -502,13 +506,21 @@ STDOUT{stdout_truncated_note}:
 STDERR:
 {stderr}
 
-Analizza il risultato in italiano, in modo CONCISO (max 6-8 righe):
-- Il comando è andato a buon fine?
-- Cosa significa l'output principale (in poche parole)?
-- Se c'è un errore, qual è la causa e come si corregge?
-- C'è un passo successivo utile da suggerire?
+REGOLE DI BREVITÀ (VINCOLANTI):
+- exit_code=0 e output < 200 byte → 1-2 righe. Dici cosa ha fatto e basta.
+- exit_code=0 e output più lungo → 2-4 righe. Riassumi il contenuto, non lo descrivi.
+- exit_code!=0 oppure stderr non vuoto → 3-6 righe. Causa concreta + come correggere
+  (con il comando giusto, se applicabile). Niente prosa generica.
 
-Rispondi in prosa, non in JSON. Non ripetere il comando: vai dritto all'analisi.
+NON ripetere il comando, NON elencare le opzioni usate, NON spiegare l'ovvio,
+NON suggerire `ls` o `cd ~` come "passo successivo" se non è pertinente.
+
+Esempi del tono atteso:
+- "Sei in /tmp/foo. Niente di insolito."
+- "Trovati 12 file .py, nessuno sotto node_modules."
+- "SyntaxError: parentesi mancante. Usa: python3 -c 'print(\\"hello\\")'."
+
+Rispondi in italiano, in prosa, NON in JSON.
 """
 
 
@@ -522,7 +534,7 @@ class TerminalAgent:
 
     Args:
         llm:               Client Ollama (uno nuovo viene creato se None).
-        web_searcher:      Istanza già caricata di WebSearcher. Se None e
+        web_searcher:      Istanza già caricata di SearXNGClient. Se None e
                            settings.terminal_agent.enable_web_search è True,
                            viene creata al primo `propose()` che ne ha bisogno.
         model_role:        Override del ModelRole (default: da settings).
@@ -704,7 +716,7 @@ class TerminalAgent:
                 messages,
                 role=self._model_role,
                 system=system_prompt,
-                options={"think": self._cfg.use_thinking},
+                options={"think": self._cfg.use_thinking_propose},
             )
             raw = response.content
             parsed = _extract_json(raw)
@@ -956,7 +968,7 @@ class TerminalAgent:
             response = await self._llm.chat(
                 [Message(role=Role.USER, content=prompt)],
                 role=self._model_role,
-                options={"think": self._cfg.use_thinking},
+                options={"think": self._cfg.use_thinking_analyze},
             )
             return response.content.strip()
         except Exception as exc:
@@ -1017,32 +1029,38 @@ class TerminalAgent:
     async def _do_search(self, query: str) -> tuple[str, list[str]]:
         """
         Esegue una ricerca web e ritorna (blocco_testuale, lista_url).
-        Lazy-load del WebSearcher al primo uso.
+        Lazy-load del client web al primo uso.
         """
         if self._web_searcher is None:
             try:
-                # import lazy: web_search ha dipendenze pesanti (httpx, bs4)
-                from modules.web_search import WebSearcher  # type: ignore
-                self._web_searcher = WebSearcher()
-                loader = getattr(self._web_searcher, "load", None)
-                if loader:
-                    await loader()
+                # import lazy: web_search ha dipendenze pesanti (httpx)
+                from modules.web_search import SearXNGClient  # type: ignore
+                self._web_searcher = SearXNGClient()
             except Exception as exc:
                 logger.warning(
-                    "terminal_agent | impossibile creare WebSearcher: {} — "
+                    "terminal_agent | impossibile creare SearXNGClient: {} — "
                     "ricerca skippata", exc,
                 )
                 return "[ricerca web non disponibile]", []
 
         try:
-            results = await self._web_searcher.search(
+            response = await self._web_searcher.search(
                 query, max_results=self._cfg.max_search_results,
             )
         except Exception as exc:
             logger.warning("terminal_agent | search fallita: {}", exc)
             return f"[ricerca fallita: {exc}]", []
 
-        # results è una lista di dataclass/dict con title/url/snippet/content
+        # response è SearchResponse: .results è lista di SearchResult
+        # (con .title, .url, .snippet). Se mai venisse passato un mock che
+        # ritorna lista direttamente, _get() qui sotto funziona comunque.
+        results = _get(response, "results", response)
+        err     = _get(response, "error",   None)
+
+        if err:
+            logger.debug("terminal_agent | search ritorna errore: {}", err)
+            return f"[ricerca fallita: {err}]", []
+
         lines: list[str] = []
         urls:  list[str] = []
         for i, r in enumerate(results, 1):
