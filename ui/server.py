@@ -77,7 +77,23 @@ def create_app(ws_manager: "WSManager") -> tuple[FastAPI, dict]:
 
     @app.get("/", response_class=HTMLResponse)
     async def index():
-        return HTMLResponse((_STATIC / "index.html").read_text(encoding="utf-8"))
+        # Redirect a /chat o /terminal a seconda della modalità corrente.
+        # Per il primo load (loop ancora None) → /chat.
+        loop: "UIBridge | None" = state["loop"]
+        target = "/terminal" if (loop is not None and loop.mode == "terminal") else "/chat"
+        return HTMLResponse(
+            f'<!DOCTYPE html><meta http-equiv="refresh" content="0;url={target}">'
+            f'<title>redirect</title>',
+            status_code=200,
+        )
+
+    @app.get("/chat", response_class=HTMLResponse)
+    async def chat_page():
+        return HTMLResponse((_STATIC / "chat.html").read_text(encoding="utf-8"))
+
+    @app.get("/terminal", response_class=HTMLResponse)
+    async def terminal_page():
+        return HTMLResponse((_STATIC / "terminal.html").read_text(encoding="utf-8"))
 
     @app.websocket("/ws")
     async def ws_ep(ws: WebSocket):

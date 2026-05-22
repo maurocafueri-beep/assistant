@@ -1,0 +1,1187 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<title>Terminal — local-assistant</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
+
+<style>
+:root {
+  --bg:        #000000;
+  --bg-soft:   #0a0a0a;
+  --bg-panel:  #111111;
+  --border:    #1f1f1f;
+  --border-strong: #2f2f2f;
+
+  --fg:        #ffffff;
+  --fg-dim:    #8a8a8a;
+  --fg-muted:  #555555;
+
+  --accent:    #79c0ff;
+  --accent-soft: rgba(121, 192, 255, 0.10);
+
+  --danger:    #ff6b6b;
+  --warning:   #f0b132;
+  --success:   #7ee787;
+
+  --mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100vh;
+  width:  100vw;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow: hidden;
+  font-variant-ligatures: contextual;
+}
+
+body { display: flex; flex-direction: column; }
+
+/* ──── Header (top bar) ──────────────────────────────────────────── */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: var(--bg-soft);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.topbar .left, .topbar .right {
+  display: flex; align-items: center; gap: 14px;
+}
+
+.cwd {
+  color: var(--accent);
+  font-weight: 500;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 480px;
+}
+
+.cwd .prefix { color: var(--fg-muted); margin-right: 6px; }
+
+.model-pill {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  padding: 3px 8px;
+  cursor: pointer;
+  color: var(--fg-dim);
+  font-size: 11px;
+  transition: background 0.12s, color 0.12s;
+}
+.model-pill:hover { background: var(--accent-soft); color: var(--accent); }
+
+.icon-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.icon-btn:hover { color: var(--fg); background: var(--bg-panel); }
+.icon-btn:active { transform: translateY(1px); }
+
+/* Mode switch button (going back to chat) */
+.mode-switch {
+  display: flex;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.mode-switch button {
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.mode-switch button:hover { color: var(--fg); }
+.mode-switch button.active { background: var(--accent-soft); color: var(--accent); }
+
+/* ──── Main scrollable area (the "terminal flow") ────────────────── */
+
+.terminal-flow {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 18px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+.terminal-flow::-webkit-scrollbar { width: 8px; }
+.terminal-flow::-webkit-scrollbar-track { background: transparent; }
+.terminal-flow::-webkit-scrollbar-thumb {
+  background: var(--border-strong); border-radius: 4px;
+}
+
+/* Turn blocks — each user request + proposal + output + analysis */
+
+.turn {
+  margin-bottom: 22px;
+  animation: fadeIn 0.18s ease-out;
+}
+@keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+.turn-request {
+  color: var(--fg-muted);
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+.turn-request::before { content: "› "; color: var(--accent); margin-right: 2px; }
+
+.proposal {
+  background: var(--bg-panel);
+  border-left: 2px solid var(--accent);
+  padding: 10px 14px;
+  margin: 4px 0 8px;
+  border-radius: 0 3px 3px 0;
+}
+.proposal .rationale {
+  color: var(--accent);
+  font-size: 12px;
+  margin-bottom: 6px;
+  line-height: 1.5;
+}
+.proposal .command-line {
+  color: var(--fg);
+  font-weight: 500;
+}
+.proposal .command-line .prompt { color: var(--success); margin-right: 8px; }
+
+.proposal-meta {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.proposal-meta .risk { font-weight: 500; }
+.proposal-meta .risk.safe      { color: var(--success); }
+.proposal-meta .risk.moderate  { color: var(--warning); }
+.proposal-meta .risk.dangerous { color: var(--danger); }
+.proposal-meta .sources a {
+  color: var(--accent);
+  text-decoration: none;
+  margin-right: 8px;
+  font-size: 10.5px;
+}
+.proposal-meta .sources a:hover { text-decoration: underline; }
+
+.proposal-actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+}
+.btn {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 5px 14px;
+  border-radius: 3px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-soft);
+  color: var(--fg);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.btn:hover    { border-color: var(--fg-dim); }
+.btn:active   { transform: translateY(1px); }
+.btn.primary  { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 500; }
+.btn.primary:hover  { background: #a3d3ff; border-color: #a3d3ff; }
+.btn.danger   { color: var(--danger); border-color: var(--danger); }
+.btn.danger:hover { background: rgba(255,107,107,0.10); }
+.btn .hk {
+  opacity: 0.6;
+  font-size: 10px;
+  margin-left: 6px;
+}
+
+.output {
+  padding: 6px 0 6px 18px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg);
+  border-left: 1px solid var(--border);
+  margin: 6px 0;
+  font-size: 13px;
+}
+.output.stderr { color: var(--danger); border-left-color: var(--danger); }
+.output.empty  { color: var(--fg-muted); font-style: italic; padding-left: 12px; }
+
+.result-meta {
+  font-size: 11px;
+  color: var(--fg-muted);
+  padding-left: 12px;
+  display: flex;
+  gap: 14px;
+  margin-bottom: 6px;
+}
+.result-meta .exit.ok    { color: var(--success); }
+.result-meta .exit.fail  { color: var(--danger); }
+
+.analysis {
+  color: var(--accent);
+  padding: 8px 14px;
+  margin: 8px 0;
+  background: var(--accent-soft);
+  border-radius: 3px;
+  font-size: 13px;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+.analysis::before { content: "→ "; color: var(--accent); margin-right: 3px; font-weight: 500; }
+
+.system-msg {
+  color: var(--fg-muted);
+  font-style: italic;
+  padding: 6px 0;
+  font-size: 12px;
+}
+.system-msg.error    { color: var(--danger); font-style: normal; }
+.system-msg.cwd      { color: var(--accent); font-style: normal; }
+.system-msg.cancelled { color: var(--warning); }
+
+/* ──── Input box (bottom) ──────────────────────────────────────────── */
+
+.input-row {
+  display: flex;
+  align-items: center;
+  border-top: 1px solid var(--border);
+  background: var(--bg-soft);
+  padding: 8px 14px;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.input-row .input-prompt {
+  color: var(--accent);
+  font-weight: 500;
+  font-size: 14px;
+  user-select: none;
+}
+.input-row textarea {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 14px;
+  resize: none;
+  line-height: 1.4;
+  padding: 4px 0;
+  max-height: 120px;
+}
+.input-row textarea::placeholder { color: var(--fg-muted); }
+
+.input-row .mic-btn {
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--fg-dim);
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.input-row .mic-btn:hover { color: var(--fg); }
+.input-row .mic-btn.listening {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: rgba(255,107,107,0.08);
+}
+
+.status-line {
+  font-size: 10.5px;
+  color: var(--fg-muted);
+  padding: 4px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  display: flex;
+  gap: 18px;
+  flex-shrink: 0;
+}
+.status-line .dot { color: var(--fg-muted); }
+.status-line .dot.on    { color: var(--success); }
+.status-line .dot.busy  { color: var(--warning); }
+
+/* ──── Modal for model management ──────────────────────────────────── */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.75);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 999;
+}
+.modal-overlay.show { display: flex; }
+.modal {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 18px 20px;
+  width: 540px;
+  max-width: 90vw;
+  max-height: 80vh;
+  overflow: auto;
+}
+.modal h2 {
+  font-size: 14px;
+  margin-bottom: 4px;
+  color: var(--fg);
+  font-weight: 500;
+}
+.modal .desc {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  margin-bottom: 14px;
+}
+.modal .model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+}
+.modal .model-row:hover { background: var(--bg-soft); }
+.modal .model-row.current { border-color: var(--accent); }
+.modal .model-row .name { color: var(--fg); font-size: 13px; }
+.modal .model-row .meta {
+  color: var(--fg-muted); font-size: 11px; margin-left: 10px;
+}
+.modal .model-row .current-tag {
+  color: var(--accent); font-size: 10px; margin-left: 8px; text-transform: uppercase;
+}
+.modal .model-row input[type=checkbox] {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.modal .model-list { margin-bottom: 14px; }
+.modal .empty {
+  color: var(--fg-muted);
+  font-style: italic;
+  text-align: center;
+  padding: 20px;
+}
+.modal .actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* ──── Misc ──────────────────────────────────────────────────────────── */
+
+.hidden { display: none !important; }
+a { color: var(--accent); }
+::selection { background: var(--accent-soft); color: var(--accent); }
+</style>
+</head>
+
+<body>
+
+<!-- ── Top bar ──────────────────────────────────────────────────────── -->
+<div class="topbar">
+  <div class="left">
+    <span class="cwd">
+      <span class="prefix">cwd:</span><span id="cwdLabel">~</span>
+    </span>
+  </div>
+
+  <div class="right">
+    <select id="modelSelect" class="model-pill" title="Modello LLM"></select>
+    <button id="manageModelsBtn" class="icon-btn" title="Gestisci modelli">[gestisci]</button>
+    <button id="resetBtn" class="icon-btn" title="Reset shell (cwd e history)">[reset]</button>
+
+    <div class="mode-switch" title="Modalità">
+      <button id="modeChat">chat</button>
+      <button id="modeTerm" class="active">terminale</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Flow scrollable ──────────────────────────────────────────────── -->
+<div id="flow" class="terminal-flow"></div>
+
+<!-- ── Input row ────────────────────────────────────────────────────── -->
+<div class="input-row">
+  <span class="input-prompt">$</span>
+  <textarea
+    id="cmdInput"
+    rows="1"
+    autofocus
+    placeholder="Scrivi una richiesta (es. 'mostra i file più grossi nella mia home')…"
+    spellcheck="false"
+    autocomplete="off"
+    autocorrect="off"
+  ></textarea>
+  <button id="micBtn" class="mic-btn" title="Push-to-talk (tieni premuto SPAZIO)">🎤</button>
+</div>
+
+<!-- ── Status line ──────────────────────────────────────────────────── -->
+<div class="status-line">
+  <span><span id="wsDot" class="dot">●</span> ws</span>
+  <span>modello: <span id="statusModel">—</span></span>
+  <span>history: <span id="statusHistory">0</span></span>
+  <span id="statusPending" class="hidden">in attesa: <span id="statusPendingN">0</span></span>
+  <span style="margin-left:auto" id="statusHint">↵ invia • esc annulla • ↑/↓ history</span>
+</div>
+
+<!-- ── Modal: gestione modelli ──────────────────────────────────────── -->
+<div id="modelsModal" class="modal-overlay">
+  <div class="modal">
+    <h2>Gestione modelli per il terminale</h2>
+    <div class="desc">
+      Seleziona quali modelli "thinking" mostrare nel selettore. Le scelte sono
+      persistite tra i riavvii. Solo i modelli installati su Ollama che
+      appartengono alle <em>thinking families</em> sono mostrati qui.
+    </div>
+    <div id="modelList" class="model-list"></div>
+    <div class="actions">
+      <button id="modelsCloseBtn" class="btn">Chiudi</button>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+// ============================================================================
+// State
+// ============================================================================
+
+const state = {
+  ws: null,
+  wsReady: false,
+  cwd: "~",
+  model: null,
+  models: [],          // [{name, family, parameter_size, hidden, current}]
+  pending: {},         // proposal_id → proposal (in attesa di conferma)
+  history: [],         // turni
+  inputHistory: [],    // history del box input (frecce su/giù)
+  inputHistoryIdx: -1, // 0 = più recente, -1 = nessuna selezione (input live)
+  inputDraft: "",      // testo non ancora confermato (per ripristinare con ↓)
+  busy: false,         // c'è una propose o confirm in volo
+};
+
+// ============================================================================
+// DOM refs
+// ============================================================================
+
+const $ = (id) => document.getElementById(id);
+const flowEl       = $("flow");
+const cmdInput     = $("cmdInput");
+const cwdLabel     = $("cwdLabel");
+const modelSelect  = $("modelSelect");
+const wsDot        = $("wsDot");
+const statusModel  = $("statusModel");
+const statusHist   = $("statusHistory");
+const statusPending = $("statusPending");
+const statusPendingN = $("statusPendingN");
+const modelsModal  = $("modelsModal");
+const modelList    = $("modelList");
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+function scrollFlow() {
+  flowEl.scrollTop = flowEl.scrollHeight;
+}
+
+function setBusy(b) {
+  state.busy = b;
+  wsDot.classList.toggle("busy", b);
+  cmdInput.disabled = b;
+}
+
+function updateStatusBar() {
+  statusModel.textContent  = state.model || "—";
+  statusHist.textContent   = state.history.length;
+  const pendingN = Object.keys(state.pending).length;
+  statusPendingN.textContent = pendingN;
+  statusPending.classList.toggle("hidden", pendingN === 0);
+}
+
+// ============================================================================
+// Rendering
+// ============================================================================
+
+function renderRequest(text) {
+  const el = document.createElement("div");
+  el.className = "turn-request";
+  el.textContent = text;
+  return el;
+}
+
+function renderProposal(proposal, turnEl) {
+  const el = document.createElement("div");
+  el.className = "proposal";
+  el.dataset.proposalId = proposal.proposal_id;
+
+  let html = "";
+  if (proposal.rationale) {
+    html += `<div class="rationale">${escapeHtml(proposal.rationale)}</div>`;
+  }
+  html += `<div class="command-line"><span class="prompt">$</span>${escapeHtml(proposal.command)}</div>`;
+
+  // Meta
+  let meta = `<div class="proposal-meta">`;
+  meta += `<span class="risk ${proposal.risk_level}">[${proposal.risk_level}]</span>`;
+  meta += `<span class="cwd-meta">cwd: ${escapeHtml(proposal.cwd)}</span>`;
+  if (proposal.search_used && proposal.sources && proposal.sources.length) {
+    meta += `<span class="sources">fonti: `;
+    proposal.sources.slice(0, 3).forEach(u => {
+      meta += `<a href="${escapeHtml(u)}" target="_blank">${escapeHtml(short(u))}</a>`;
+    });
+    meta += `</span>`;
+  }
+  meta += `</div>`;
+  html += meta;
+
+  // Action buttons if needs confirmation
+  if (proposal.needs_confirmation) {
+    html += `
+      <div class="proposal-actions">
+        <button class="btn primary" data-action="confirm">Esegui <span class="hk">↵</span></button>
+        <button class="btn danger"  data-action="cancel">Annulla <span class="hk">esc</span></button>
+      </div>`;
+  }
+
+  el.innerHTML = html;
+
+  // Bind actions
+  el.querySelectorAll("button[data-action]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const action = btn.dataset.action;
+      if (action === "confirm") confirmProposal(proposal.proposal_id, el);
+      if (action === "cancel")  cancelProposal(proposal.proposal_id, el);
+    });
+  });
+
+  return el;
+}
+
+function renderResult(result) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "result-block";
+
+  const meta = document.createElement("div");
+  meta.className = "result-meta";
+  const exitClass = result.exit_code === 0 ? "ok" : "fail";
+  meta.innerHTML = `
+    <span class="exit ${exitClass}">exit=${result.exit_code}</span>
+    <span>${result.duration_ms.toFixed(0)}ms</span>
+    ${result.truncated ? '<span style="color:var(--warning)">[output troncato]</span>' : ""}
+  `;
+  wrapper.appendChild(meta);
+
+  if (result.stdout) {
+    const o = document.createElement("div");
+    o.className = "output";
+    o.textContent = result.stdout;
+    wrapper.appendChild(o);
+  }
+  if (result.stderr) {
+    const o = document.createElement("div");
+    o.className = "output stderr";
+    o.textContent = result.stderr;
+    wrapper.appendChild(o);
+  }
+  if (!result.stdout && !result.stderr) {
+    const o = document.createElement("div");
+    o.className = "output empty";
+    o.textContent = "(nessun output)";
+    wrapper.appendChild(o);
+  }
+  return wrapper;
+}
+
+function renderAnalysis(text) {
+  const el = document.createElement("div");
+  el.className = "analysis";
+  el.textContent = text;
+  return el;
+}
+
+function renderSystemMsg(text, kind = "") {
+  const el = document.createElement("div");
+  el.className = "system-msg" + (kind ? " " + kind : "");
+  el.textContent = text;
+  return el;
+}
+
+function short(url) {
+  try {
+    const u = new URL(url);
+    return u.hostname.replace(/^www\./, "") + (u.pathname.length > 1 ? "…" : "");
+  } catch { return url.length > 40 ? url.slice(0, 40) + "…" : url; }
+}
+
+// ============================================================================
+// Turn builder — single source of truth per turno
+// ============================================================================
+
+/** Crea un blocco turno con la richiesta, ritorna l'elemento per aggiungere
+ *  proposal/result/analysis successivamente. */
+function appendTurn(requestText) {
+  const turnEl = document.createElement("div");
+  turnEl.className = "turn";
+  turnEl.appendChild(renderRequest(requestText));
+  flowEl.appendChild(turnEl);
+  scrollFlow();
+  return turnEl;
+}
+
+/** Cerca l'ultimo turno SENZA proposal o crea uno nuovo. */
+function getOrCreateLastTurn(requestText) {
+  const turns = flowEl.querySelectorAll(".turn");
+  const last = turns[turns.length - 1];
+  if (last && !last.querySelector(".proposal")) return last;
+  return appendTurn(requestText);
+}
+
+function appendToLastTurn(node) {
+  const turns = flowEl.querySelectorAll(".turn");
+  const last = turns[turns.length - 1];
+  if (!last) {
+    // edge case: niente turno → creo uno vuoto
+    const t = document.createElement("div");
+    t.className = "turn";
+    t.appendChild(node);
+    flowEl.appendChild(t);
+  } else {
+    last.appendChild(node);
+  }
+  scrollFlow();
+}
+
+// ============================================================================
+// HTTP API
+// ============================================================================
+
+async function apiPost(path, body) {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  const text = await r.text();
+  // Prova a parsare come JSON; se non lo è, ritorna un errore "comprensibile"
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {
+      ok: false,
+      error: `HTTP ${r.status} ${r.statusText} — ${text.slice(0, 200)}`,
+    };
+  }
+}
+async function apiGet(path) {
+  const r = await fetch(path);
+  const text = await r.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {
+      ok: false,
+      error: `HTTP ${r.status} ${r.statusText} — ${text.slice(0, 200)}`,
+    };
+  }
+}
+
+// ============================================================================
+// Actions: propose / confirm / cancel
+// ============================================================================
+
+async function submitInput() {
+  const text = cmdInput.value.trim();
+  if (!text || state.busy) return;
+
+  // history del box input
+  if (state.inputHistory[0] !== text) state.inputHistory.unshift(text);
+  if (state.inputHistory.length > 50) state.inputHistory.pop();
+  state.inputHistoryIdx = -1;
+  state.inputDraft = "";
+
+  cmdInput.value = "";
+  appendTurn(text);
+  setBusy(true);
+  try {
+    const out = await apiPost("/api/terminal/propose", { text });
+    if (!out.ok) {
+      appendToLastTurn(renderSystemMsg(out.error || "errore", "error"));
+      return;
+    }
+    // Se non richiede conferma, il backend ha già fatto execute+analyze
+    // e il WS ha già pushato proposal/result/analysis. Niente da fare qui.
+    // Se richiede conferma, mostriamo la proposal con i bottoni.
+    // Però la proposal arriva sia via WS (event-driven) sia nel ritorno HTTP.
+    // Per evitare doppi rendering, lasciamo che sia il WS a renderizzare.
+    // Tracciamo solo il pending nello state.
+    if (out.needs_confirmation && out.turn && out.turn.proposal) {
+      state.pending[out.turn.proposal.proposal_id] = out.turn.proposal;
+      updateStatusBar();
+    }
+  } catch (e) {
+    appendToLastTurn(renderSystemMsg("errore di rete: " + e.message, "error"));
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function confirmProposal(proposal_id, proposalEl) {
+  if (!state.pending[proposal_id]) return;
+  setBusy(true);
+  try {
+    // Disabilita bottoni e mostra "esecuzione…"
+    if (proposalEl) {
+      proposalEl.querySelectorAll("button[data-action]").forEach(b => b.disabled = true);
+    }
+    const out = await apiPost("/api/terminal/confirm", { proposal_id });
+    if (!out.ok) {
+      appendToLastTurn(renderSystemMsg(out.error || "errore", "error"));
+    }
+    // result + analysis arrivano via WS, idem come sopra
+    delete state.pending[proposal_id];
+    updateStatusBar();
+  } catch (e) {
+    appendToLastTurn(renderSystemMsg("errore di rete: " + e.message, "error"));
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function cancelProposal(proposal_id, proposalEl) {
+  await apiPost("/api/terminal/cancel", { proposal_id });
+  delete state.pending[proposal_id];
+  if (proposalEl) {
+    proposalEl.querySelectorAll(".proposal-actions").forEach(a => a.remove());
+  }
+  appendToLastTurn(renderSystemMsg("proposta annullata", "cancelled"));
+  updateStatusBar();
+}
+
+async function resetShell() {
+  await apiPost("/api/terminal/reset", {});
+  flowEl.innerHTML = "";
+  state.history = [];
+  state.pending = {};
+  appendToLastTurnRaw(renderSystemMsg("shell resettata", "cwd"));
+  updateStatusBar();
+}
+
+// Variante per usi DOPO reset: appendi a flow root, non a "last turn"
+function appendToLastTurnRaw(node) {
+  flowEl.appendChild(node);
+  scrollFlow();
+}
+
+// ============================================================================
+// Mode switch
+// ============================================================================
+
+async function switchToChat() {
+  await apiPost("/api/mode", { mode: "chat" });
+  window.location = "/chat";
+}
+
+// ============================================================================
+// Model management
+// ============================================================================
+
+async function loadModels() {
+  const data = await apiGet("/api/terminal/models");
+  state.models = data.models || [];
+  state.model  = data.current;
+
+  // Rebuild dropdown
+  modelSelect.innerHTML = "";
+  state.models
+    .filter(m => !m.hidden)
+    .forEach(m => {
+      const opt = document.createElement("option");
+      opt.value = m.name;
+      opt.textContent = m.name;
+      if (m.name === state.model) opt.selected = true;
+      modelSelect.appendChild(opt);
+    });
+
+  updateStatusBar();
+  buildModelList();
+}
+
+async function switchModel(name) {
+  const r = await apiPost("/api/terminal/model", { name });
+  if (r.ok) {
+    state.model = name;
+    updateStatusBar();
+  } else {
+    appendToLastTurnRaw(renderSystemMsg("impossibile cambiare modello: " + (r.error || "?"), "error"));
+  }
+}
+
+function buildModelList() {
+  modelList.innerHTML = "";
+  if (!state.models.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "nessun modello compatibile trovato (verifica che Ollama sia in esecuzione)";
+    modelList.appendChild(empty);
+    return;
+  }
+  state.models.forEach(m => {
+    const row = document.createElement("div");
+    row.className = "model-row" + (m.current ? " current" : "");
+
+    const left = document.createElement("div");
+    left.innerHTML = `<span class="name">${escapeHtml(m.name)}</span>
+                      <span class="meta">${escapeHtml(m.parameter_size || "")}</span>
+                      ${m.current ? '<span class="current-tag">attivo</span>' : ""}`;
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = !m.hidden;
+    checkbox.title = "Mostra nel selettore";
+    checkbox.addEventListener("change", async () => {
+      await apiPost("/api/terminal/models/visibility", {
+        name: m.name,
+        visible: checkbox.checked,
+      });
+      // Refresh
+      await loadModels();
+    });
+
+    row.appendChild(left);
+    row.appendChild(checkbox);
+    modelList.appendChild(row);
+  });
+}
+
+function openModelsModal() { modelsModal.classList.add("show"); }
+function closeModelsModal() { modelsModal.classList.remove("show"); }
+
+// ============================================================================
+// WebSocket
+// ============================================================================
+
+function connectWS() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  state.ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+  state.ws.addEventListener("open", () => {
+    state.wsReady = true;
+    wsDot.classList.add("on");
+  });
+  state.ws.addEventListener("close", () => {
+    state.wsReady = false;
+    wsDot.classList.remove("on", "busy");
+    // riconnessione semplice ogni 2s
+    setTimeout(connectWS, 2000);
+  });
+  state.ws.addEventListener("error", () => {
+    wsDot.classList.remove("on");
+  });
+  state.ws.addEventListener("message", (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+    handleWS(msg);
+  });
+}
+
+function handleWS(msg) {
+  switch (msg.type) {
+    case "init":
+      // Se siamo qui ma mode != "terminal", il backend ci redirigerà via API
+      // Ma intanto ripristiniamo lo stato del terminale se presente
+      if (msg.terminal) {
+        state.cwd = msg.terminal.cwd || "~";
+        cwdLabel.textContent = state.cwd;
+        state.history = msg.terminal.history || [];
+        // Re-render della history
+        renderInitialHistory(msg.terminal);
+      }
+      if (msg.mode && msg.mode !== "terminal") {
+        // Il backend è in modalità chat ma noi siamo su /terminal: redirect.
+        // (succede se l'utente ha aperto /terminal direttamente o
+        //  ricaricato dopo che qualcuno ha cambiato modalità)
+        window.location = "/chat";
+      }
+      break;
+
+    case "mode":
+      if (msg.mode === "chat") {
+        window.location = "/chat";
+      }
+      break;
+
+    case "terminal.proposal":
+      renderIncomingProposal(msg.proposal);
+      break;
+
+    case "terminal.result":
+      renderIncomingResult(msg.result, msg.analysis);
+      break;
+
+    case "terminal.cwd":
+      state.cwd = msg.cwd;
+      cwdLabel.textContent = state.cwd;
+      appendToLastTurnRaw(renderSystemMsg("cwd → " + msg.cwd, "cwd"));
+      break;
+
+    case "terminal.cancelled":
+      // Il bottone "annulla" ha già fatto il rendering;
+      // questo è ridondante se la cancel è venuta da noi.
+      break;
+
+    case "terminal.error":
+      appendToLastTurnRaw(renderSystemMsg(msg.message, "error"));
+      break;
+
+    case "terminal.reset":
+      // Reset arrivato dal backend (es. da altro client): pulisci la flow
+      flowEl.innerHTML = "";
+      state.history = [];
+      state.pending = {};
+      state.cwd = msg.cwd || "~";
+      cwdLabel.textContent = state.cwd;
+      updateStatusBar();
+      break;
+
+    case "terminal.model":
+      state.model = msg.name;
+      // sincronizza il dropdown
+      if (modelSelect.value !== msg.name) modelSelect.value = msg.name;
+      updateStatusBar();
+      break;
+
+    case "terminal.transcription":
+      // STT ha trascritto qualcosa: popola il box input, NON inviare
+      cmdInput.value = msg.text;
+      cmdInput.focus();
+      autosizeInput();
+      break;
+
+    case "state":
+      // generico cambio di stato voice_loop, può ignorare in terminale
+      break;
+
+    default:
+      // niente
+      break;
+  }
+}
+
+function renderIncomingProposal(proposal) {
+  const turnEl = getOrCreateLastTurn("(richiesta)");
+  // Se la proposta è già stata renderizzata (es. doppio fire), salta
+  if (turnEl.querySelector(`.proposal[data-proposal-id="${proposal.proposal_id}"]`)) {
+    return;
+  }
+  const propEl = renderProposal(proposal, turnEl);
+  turnEl.appendChild(propEl);
+  scrollFlow();
+
+  if (proposal.needs_confirmation) {
+    state.pending[proposal.proposal_id] = proposal;
+    updateStatusBar();
+  }
+}
+
+function renderIncomingResult(result, analysis) {
+  const turnEl = getLastTurnWithProposal(result.proposal_id);
+  if (turnEl) {
+    turnEl.appendChild(renderResult(result));
+    if (analysis) turnEl.appendChild(renderAnalysis(analysis));
+  } else {
+    // edge case: result senza turno corrispondente
+    const t = document.createElement("div");
+    t.className = "turn";
+    t.appendChild(renderResult(result));
+    if (analysis) t.appendChild(renderAnalysis(analysis));
+    flowEl.appendChild(t);
+  }
+  // remove pending
+  if (state.pending[result.proposal_id]) {
+    delete state.pending[result.proposal_id];
+    updateStatusBar();
+  }
+  state.history.push({ proposal_id: result.proposal_id });
+  scrollFlow();
+}
+
+function getLastTurnWithProposal(proposal_id) {
+  const sel = `.proposal[data-proposal-id="${proposal_id}"]`;
+  const p = flowEl.querySelector(sel);
+  return p ? p.closest(".turn") : null;
+}
+
+function renderInitialHistory(termState) {
+  if (!termState.history || !termState.history.length) {
+    // welcome
+    const w = renderSystemMsg(
+      `terminale pronto • cwd: ${termState.cwd}`,
+      "cwd"
+    );
+    flowEl.appendChild(w);
+    return;
+  }
+  termState.history.forEach(t => {
+    const turnEl = document.createElement("div");
+    turnEl.className = "turn";
+    if (t.user_request) {
+      turnEl.appendChild(renderRequest(t.user_request));
+    }
+    if (t.proposal) {
+      turnEl.appendChild(renderProposal(t.proposal, turnEl));
+    }
+    if (t.result) {
+      turnEl.appendChild(renderResult(t.result));
+    }
+    if (t.analysis) {
+      turnEl.appendChild(renderAnalysis(t.analysis));
+    }
+    if (t.error) {
+      turnEl.appendChild(renderSystemMsg(t.error, "error"));
+    }
+    flowEl.appendChild(turnEl);
+  });
+  // restora i pending dal payload init
+  (termState.pending || []).forEach(p => state.pending[p.proposal_id] = p);
+  scrollFlow();
+}
+
+// ============================================================================
+// Input box: autosize, history navigation, keybindings
+// ============================================================================
+
+function autosizeInput() {
+  cmdInput.style.height = "auto";
+  cmdInput.style.height = Math.min(cmdInput.scrollHeight, 120) + "px";
+}
+
+cmdInput.addEventListener("input", () => {
+  autosizeInput();
+  // appena l'utente modifica, esce dalla modalità "history selection"
+  if (state.inputHistoryIdx !== -1) state.inputHistoryIdx = -1;
+});
+
+cmdInput.addEventListener("keydown", (e) => {
+  // Enter senza Shift = invia
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    // Se c'è una proposta in attesa, Enter la conferma invece di mandare nuovo input
+    const pendingIds = Object.keys(state.pending);
+    if (pendingIds.length > 0 && !cmdInput.value.trim()) {
+      const lastId = pendingIds[pendingIds.length - 1];
+      const propEl = flowEl.querySelector(`.proposal[data-proposal-id="${lastId}"]`);
+      confirmProposal(lastId, propEl);
+      return;
+    }
+    submitInput();
+    return;
+  }
+
+  // Esc annulla l'ultima proposta in attesa (se input vuoto)
+  if (e.key === "Escape") {
+    const pendingIds = Object.keys(state.pending);
+    if (pendingIds.length > 0 && !cmdInput.value.trim()) {
+      const lastId = pendingIds[pendingIds.length - 1];
+      const propEl = flowEl.querySelector(`.proposal[data-proposal-id="${lastId}"]`);
+      cancelProposal(lastId, propEl);
+      return;
+    }
+    // altrimenti svuota il box input
+    if (cmdInput.value) cmdInput.value = "";
+    return;
+  }
+
+  // ↑ / ↓ history del box input (solo se cursore in posizione iniziale/finale)
+  if (e.key === "ArrowUp") {
+    if (state.inputHistory.length === 0) return;
+    if (state.inputHistoryIdx === -1) state.inputDraft = cmdInput.value;
+    state.inputHistoryIdx = Math.min(state.inputHistoryIdx + 1, state.inputHistory.length - 1);
+    cmdInput.value = state.inputHistory[state.inputHistoryIdx];
+    autosizeInput();
+    e.preventDefault();
+    return;
+  }
+  if (e.key === "ArrowDown") {
+    if (state.inputHistoryIdx === -1) return;
+    state.inputHistoryIdx -= 1;
+    if (state.inputHistoryIdx === -1) {
+      cmdInput.value = state.inputDraft;
+    } else {
+      cmdInput.value = state.inputHistory[state.inputHistoryIdx];
+    }
+    autosizeInput();
+    e.preventDefault();
+    return;
+  }
+});
+
+// ============================================================================
+// Wiring: bottoni
+// ============================================================================
+
+$("modeChat").addEventListener("click", switchToChat);
+// modeTerm già attivo, niente azione
+$("resetBtn").addEventListener("click", resetShell);
+$("manageModelsBtn").addEventListener("click", openModelsModal);
+$("modelsCloseBtn").addEventListener("click", closeModelsModal);
+modelsModal.addEventListener("click", (e) => {
+  if (e.target === modelsModal) closeModelsModal();
+});
+
+modelSelect.addEventListener("change", () => {
+  switchModel(modelSelect.value);
+});
+
+// Click sul mic: per ora niente; il PTT funziona via SPAZIO dal voice_loop.
+// Mostro un hint se cliccato.
+$("micBtn").addEventListener("click", () => {
+  appendToLastTurnRaw(renderSystemMsg("tieni premuto SPAZIO per parlare", ""));
+});
+
+// Focus automatico sull'input
+cmdInput.focus();
+
+// ============================================================================
+// Init
+// ============================================================================
+
+(async function init() {
+  await loadModels();
+  connectWS();
+})();
+</script>
+
+</body>
+</html>

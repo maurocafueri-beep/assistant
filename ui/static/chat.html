@@ -89,6 +89,14 @@ body{
 .rail-div{width:26px;height:1px;background:var(--b1);margin:10px 0 4px}
 .rail-grp-label{font-family:var(--mono);font-size:8px;letter-spacing:.12em;color:var(--t4);margin-bottom:6px}
 .rail-btn svg{width:19px;height:19px}
+.rail-btn.term-btn{
+  border:1px solid var(--b1);
+  background:var(--card);
+  font-family:var(--mono);
+  font-size:9px;
+  letter-spacing:.05em;
+}
+.rail-btn.term-btn:hover{background:var(--card-h);color:var(--ac);border-color:var(--ac-d)}
 .rail-cfg{
   flex-direction:column;gap:3px;height:auto;padding:8px 0 7px;width:52px;border-radius:13px;
 }
@@ -573,6 +581,9 @@ body.sel-open .copy-btn{pointer-events:none!important;opacity:0!important}
     </button>
 
     <div class="rail-spacer"></div>
+    <button class="rail-btn term-btn" id="rb-term" title="Modalità terminale">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+    </button>
     <button class="rail-btn" id="rb-theme" title="Tema (T)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></svg>
     </button>
@@ -700,6 +711,14 @@ function showToast(m,d=2000){toast.textContent=m;toast.classList.add('show');cle
 function setTheme(d){isDark=d;document.documentElement.dataset.theme=d?'dark':'light';$('rb-theme').textContent=d?'🌙':'☀️';try{localStorage.setItem('la-theme',d?'dark':'light')}catch(e){}}
 $('rb-theme').addEventListener('click',()=>setTheme(!isDark));
 try{if(localStorage.getItem('la-theme')==='light')setTheme(false)}catch(e){}
+
+/* Mode switch — verso il terminale */
+$('rb-term').addEventListener('click',async()=>{
+  try{
+    await fetch('/api/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'terminal'})});
+    window.location='/terminal';
+  }catch(e){showToast('Impossibile passare al terminale')}
+});
 
 /* State */
 function applyState(s){
