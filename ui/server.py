@@ -293,50 +293,90 @@ def create_app(ws_manager: "WSManager") -> tuple[FastAPI, dict]:
         return JSONResponse({"ok":True,"mode":body.mode})
 
     # ── Terminal endpoints ───────────────────────────────────────────
+
+    def _terminal_or_503():
+        """Helper: ritorna (term, None) se pronto, (None, JSONResponse 503) altrimenti."""
+        term = state.get("terminal")
+        if term is None:
+            return None, JSONResponse(
+                {"ok":False,"error":"terminal non pronto (bridge mancante)"},
+                status_code=503,
+            )
+        if not getattr(term, "_loaded", False):
+            return None, JSONResponse(
+                {"ok":False,"error":"terminal non caricato — riavvia l'app"},
+                status_code=503,
+            )
+        return term, None
+
     @app.get("/api/terminal/state")
     async def terminal_state():
-        term = state.get("terminal")
-        if term is None: return JSONResponse({"ok":False,"error":"terminal non pronto"},status_code=503)
-        return JSONResponse({"ok":True, **term.state_payload()})
+        term, err = _terminal_or_503()
+        if err: return err
+        try:
+            return JSONResponse({"ok":True, **term.state_payload()})
+        except Exception as e:
+            logger.exception("ui.server | /api/terminal/state: {}", e)
+            return JSONResponse({"ok":False,"error":str(e)}, status_code=500)
 
     @app.post("/api/terminal/propose")
     async def terminal_propose(body: TermProposeBody):
-        term = state.get("terminal")
-        if term is None: return JSONResponse({"ok":False,"error":"terminal non pronto"},status_code=503)
-        result = await term.propose(body.text)
-        if "error" in result:
-            return JSONResponse({"ok":False, **result}, status_code=400)
-        return JSONResponse({"ok":True, **result})
+        term, err = _terminal_or_503()
+        if err: return err
+        try:
+            result = await term.propose(body.text)
+            if "error" in result:
+                return JSONResponse({"ok":False, **result}, status_code=400)
+            return JSONResponse({"ok":True, **result})
+        except Exception as e:
+            logger.exception("ui.server | /api/terminal/propose: {}", e)
+            return JSONResponse({"ok":False,"error":str(e)}, status_code=500)
 
     @app.post("/api/terminal/confirm")
     async def terminal_confirm(body: TermProposalIdBody):
-        term = state.get("terminal")
-        if term is None: return JSONResponse({"ok":False,"error":"terminal non pronto"},status_code=503)
-        result = await term.confirm(body.proposal_id)
-        if "error" in result:
-            return JSONResponse({"ok":False, **result}, status_code=404)
-        return JSONResponse({"ok":True, **result})
+        term, err = _terminal_or_503()
+        if err: return err
+        try:
+            result = await term.confirm(body.proposal_id)
+            if "error" in result:
+                return JSONResponse({"ok":False, **result}, status_code=404)
+            return JSONResponse({"ok":True, **result})
+        except Exception as e:
+            logger.exception("ui.server | /api/terminal/confirm: {}", e)
+            return JSONResponse({"ok":False,"error":str(e)}, status_code=500)
 
     @app.post("/api/terminal/cancel")
     async def terminal_cancel(body: TermProposalIdBody):
-        term = state.get("terminal")
-        if term is None: return JSONResponse({"ok":False,"error":"terminal non pronto"},status_code=503)
-        return JSONResponse(await term.cancel(body.proposal_id))
+        term, err = _terminal_or_503()
+        if err: return err
+        try:
+            return JSONResponse(await term.cancel(body.proposal_id))
+        except Exception as e:
+            logger.exception("ui.server | /api/terminal/cancel: {}", e)
+            return JSONResponse({"ok":False,"error":str(e)}, status_code=500)
 
     @app.post("/api/terminal/reset")
     async def terminal_reset():
-        term = state.get("terminal")
-        if term is None: return JSONResponse({"ok":False,"error":"terminal non pronto"},status_code=503)
-        await term.reset()
-        return JSONResponse({"ok":True})
+        term, err = _terminal_or_503()
+        if err: return err
+        try:
+            await term.reset()
+            return JSONResponse({"ok":True})
+        except Exception as e:
+            logger.exception("ui.server | /api/terminal/reset: {}", e)
+            return JSONResponse({"ok":False,"error":str(e)}, status_code=500)
 
     # Modelli del terminale: lista completa con flag hidden/current
     @app.get("/api/terminal/models")
     async def terminal_models():
         term = state.get("terminal")
         if term is None: return JSONResponse({"models":[],"current":None})
-        mdls = await term.list_available_models()
-        return JSONResponse({"models":mdls,"current":term.current_model})
+        try:
+            mdls = await term.list_available_models()
+            return JSONResponse({"models":mdls,"current":term.current_model})
+        except Exception as e:
+            logger.exception("ui.server | /api/terminal/models: {}", e)
+            return JSONResponse({"models":[],"current":None,"error":str(e)})
 
     @app.post("/api/terminal/model")
     async def terminal_model_switch(body: ModelBody):

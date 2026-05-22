@@ -208,19 +208,30 @@ class _AsyncWorker(QObject):
                 except Exception as exc:
                     logger.warning("ui.app | restore terminal_hidden_models: {}", exc)
 
+                # ── Carica SEMPRE il TerminalBridge ──────────────────────
+                # Lo facciamo qui (non lazy al primo switch) perché lo switch
+                # da chat→terminal è una semplice POST /api/mode dal frontend:
+                # se il bridge non è caricato a quel punto, gli endpoint
+                # terminal/* tornano 500.
+                try:
+                    await terminal_bridge.load()
+                    saved_term_model = s.get("terminal_model")
+                    if saved_term_model:
+                        ok = await terminal_bridge.switch_model(saved_term_model)
+                        if not ok:
+                            logger.info(
+                                "ui.app | modello terminale salvato non più "
+                                "disponibile: '{}'", saved_term_model,
+                            )
+                except Exception as exc:
+                    logger.warning(
+                        "ui.app | load terminal_bridge fallito: {} — "
+                        "la modalità terminale non sarà disponibile", exc,
+                    )
+
                 saved_mode = s.get("mode")
                 if saved_mode == "terminal":
-                    # Carica il TerminalBridge ORA e ripristina il modello
                     try:
-                        await terminal_bridge.load()
-                        saved_term_model = s.get("terminal_model")
-                        if saved_term_model:
-                            ok = await terminal_bridge.switch_model(saved_term_model)
-                            if not ok:
-                                logger.info(
-                                    "ui.app | modello terminale salvato non più "
-                                    "disponibile: '{}'", saved_term_model,
-                                )
                         await ui_loop.set_mode("terminal")
                         logger.info("ui.app | modalità ripristinata → terminal")
                     except Exception as exc:
