@@ -112,9 +112,12 @@ class TerminalBridge:
         # history dei turni completati (memoria di sessione, no disco)
         self._history: list[AgentTurn] = []
 
-        # modello attivo per il terminale. Default: settings.ollama.chat_model
-        # se compatibile, altrimenti il primo modello visibile.
-        self._current_model: str = settings.ollama.chat_model
+        # modello attivo per il terminale. None finché load() non sceglie
+        # il primo modello visibile (deciso runtime da /api/tags + filter).
+        # NON usiamo settings.ollama.chat_model come fallback perché
+        # quello potrebbe essere un non-thinking (es. gemma3) che fa
+        # crashare il TerminalAgent con 400 su think:true.
+        self._current_model: Optional[str] = None
 
         # whitelist family per i modelli "thinking"
         self._thinking_families: list[str] = list(
@@ -136,6 +139,27 @@ class TerminalBridge:
         )
         await self._agent.load()
         self._loaded = True
+
+        # Scegli il modello iniziale: il primo visibile della lista
+        # filtrata, oppure settings.ollama.chat_model se compatibile.
+        # Se non c'è nessun thinking-model installato, _current_model
+        # resta None e l'agent userà il default di settings (rischioso,
+        # ma è il meglio che possiamo fare).
+        try:
+            visible = await self.list_visible_models()
+            if visible:
+                # Preferisci settings.ollama.chat_model se è tra i visibili
+                preferred = settings.ollama.chat_model
+                if preferred in visible:
+                    self._current_model = preferred
+                else:
+                    self._current_model = visible[0]
+                self._agent.set_model(self._current_model)
+        except Exception as exc:
+            logger.warning(
+                "ui.terminal_bridge | impossibile scegliere modello iniziale: {}",
+                exc,
+            )
 
         logger.info(
             "ui.terminal_bridge | inizializzato | cwd={} model={}",
@@ -235,12 +259,11 @@ class TerminalBridge:
             )
             return False
         self._current_model = name
-        # Forziamo il modello via settings.ollama.chat_model — coerente con
-        # come UIBridge.switch_model() già fa per la modalità chat.
-        try:
-            settings.ollama.chat_model = name
-        except Exception as exc:
-            logger.warning("ui.terminal_bridge | settings.chat_model: {}", exc)
+        # Setta il modello sull'agent SENZA toccare i settings globali
+        # (importante: settings.ollama.chat_model è usato dalla modalità chat
+        # e non vogliamo sporcarlo).
+        if self._agent is not None:
+            self._agent.set_model(name)
         await self._broadcast({"type": "terminal.model", "name": name})
         logger.info("ui.terminal_bridge | modello → {}", name)
         return True

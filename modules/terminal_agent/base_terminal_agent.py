@@ -611,6 +611,13 @@ class TerminalAgent:
         # Ultima proposta emessa (per conferma asincrona dalla UI)
         self._last_proposal: Optional[CommandProposal] = None
 
+        # Override del modello Ollama. Se settato, ha precedenza su
+        # settings.ollama.chat_model/code_model: è il modo per usare un
+        # modello specifico (es. uno "thinking") senza toccare le settings
+        # globali (che potrebbero essere un modello chat che non supporta
+        # think:true, tipo gemma3).
+        self._model_override: Optional[str] = None
+
         self._loaded: bool = False
 
     # -----------------------------------------------------------------------
@@ -661,6 +668,21 @@ class TerminalAgent:
     @property
     def last_proposal(self) -> Optional[CommandProposal]:
         return self._last_proposal
+
+    @property
+    def model(self) -> Optional[str]:
+        """Modello Ollama corrente (None = usa settings per il ModelRole)."""
+        return self._model_override
+
+    def set_model(self, name: Optional[str]) -> None:
+        """
+        Imposta il modello Ollama da usare per propose() e analyze().
+        Passa None per tornare a usare settings.ollama (in base al ModelRole).
+        Non valida la disponibilità del modello — il chiamante (es. il
+        TerminalBridge) deve averlo già verificato contro /api/tags.
+        """
+        self._model_override = name or None
+        logger.info("terminal_agent | model_override → {}", self._model_override)
 
     def reset(self) -> None:
         """Resetta cwd, history dei turni e ultima proposta."""
@@ -715,6 +737,7 @@ class TerminalAgent:
             response = await self._llm.chat(
                 messages,
                 role=self._model_role,
+                model=self._model_override,
                 system=system_prompt,
                 options={"think": self._cfg.use_thinking_propose},
             )
@@ -968,6 +991,7 @@ class TerminalAgent:
             response = await self._llm.chat(
                 [Message(role=Role.USER, content=prompt)],
                 role=self._model_role,
+                model=self._model_override,
                 options={"think": self._cfg.use_thinking_analyze},
             )
             return response.content.strip()
