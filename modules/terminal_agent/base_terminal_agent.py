@@ -224,6 +224,7 @@ DANGEROUS_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\brm\b"),                       # qualunque rm
     re.compile(r"\bdd\b"),                       # qualunque dd
     re.compile(r"\bsudo\b"),
+    re.compile(r"\bpkexec\b"),
     re.compile(r"\bsu\s+-"),
     re.compile(r"\bchmod\s+(-R\s+)?0?7{2,3}\b"), # chmod 777
     re.compile(r"\bkill\s+-9\b"),
@@ -326,8 +327,8 @@ def _classify(cmd: str, *, allow_sudo: bool) -> RiskLevel:
         if pat.search(safety_view):
             return RiskLevel.BLOCKED
 
-    # 2) sudo / su senza permesso
-    if re.search(r"\bsudo\b|\bsu\s+-", safety_view) and not allow_sudo:
+    # 2) sudo / pkexec / su senza permesso
+    if re.search(r"\bsudo\b|\bpkexec\b|\bsu\s+-", safety_view) and not allow_sudo:
         return RiskLevel.BLOCKED
 
     # 3) DANGEROUS patterns
@@ -496,7 +497,15 @@ CONTESTO CORRENTE:
 - OS: Linux
 - locale: {locale}
 - safe_dirs (directory in cui l'utente ti permette di operare): {safe_dirs}
-- sudo permesso: {allow_sudo}
+- privilegi root permessi: {allow_sudo}
+- IMPORTANTE: l'app gira come processo GUI senza terminale interattivo,
+  quindi `sudo` NON funziona (non può chiedere la password). Per comandi
+  che richiedono root usa SEMPRE `pkexec` — apre un dialog grafico
+  polkit che chiede la password all'utente. Esempio:
+    invece di: sudo apt update
+    usa:       pkexec apt update
+  Se devi concatenare più comandi con privilegi, racchiudili in `bash -c`:
+    pkexec bash -c "apt update && apt upgrade -y"
 
 {xdg_paths_block}REGOLE FONDAMENTALI:
 1. Rispondi SEMPRE e SOLO in JSON valido, in una di queste due forme:
@@ -526,7 +535,9 @@ emetti l'azione "propose".
    - se serve cambiare directory, includi `cd` nel comando
    - una sola riga (puoi usare && o ; per concatenare)
    - niente comandi distruttivi (rm -rf /, dd, mkfs, ecc.): saranno rifiutati a monte
-   - se l'utente NON ti ha dato il permesso per sudo (vedi sopra), NON usarlo
+   - se l'utente NON ti ha dato il permesso per i privilegi root (vedi sopra),
+     NON usare né `sudo` né `pkexec`. Se l'utente li ha permessi, usa SEMPRE
+     `pkexec` (mai `sudo`) per via del contesto GUI.
    - usa i percorsi XDG sopra elencati per le cartelle utente: NON inventare
      `/home/X/Desktop` o `/home/X/Downloads` se la lista XDG dice `Scrivania`
      o `Scaricati`

@@ -300,6 +300,24 @@ class TestClassify:
         # sudo abilitato, ma `rm -rf /` rimane blocked dal pattern hard
         assert _classify("sudo rm -rf /", allow_sudo=True) == RiskLevel.BLOCKED
 
+    # ── pkexec: trattato come sudo (per GUI senza terminale) ──────────
+
+    def test_pkexec_blocked_without_permission(self):
+        assert _classify("pkexec apt update", allow_sudo=False) == RiskLevel.BLOCKED
+
+    def test_pkexec_dangerous_with_permission(self):
+        # allow_sudo=True abilita anche pkexec
+        assert _classify("pkexec apt update", allow_sudo=True) == RiskLevel.DANGEROUS
+
+    def test_pkexec_rm_still_blocked(self):
+        # come sudo, pkexec non bypassa i pattern hard-blocked
+        assert _classify("pkexec rm -rf /", allow_sudo=True) == RiskLevel.BLOCKED
+
+    def test_pkexec_bash_c_compound(self):
+        # forma realistica con bash -c per concatenare comandi
+        assert _classify('pkexec bash -c "apt update && apt upgrade"',
+                         allow_sudo=True) == RiskLevel.DANGEROUS
+
     def test_compound_takes_worst_leg(self):
         # `ls` (safe) + `rm file` (dangerous) → dangerous
         assert _classify("ls && rm file", allow_sudo=False) == RiskLevel.DANGEROUS
