@@ -99,7 +99,7 @@ class TerminalAgentSettings(BaseSettings):
     max_output_bytes: int = Field(64 * 1024, ge=1024)
 
     # Loop agentico (ReAct)
-    max_iterations: int = Field(4, ge=1, le=10)
+    max_iterations: int = Field(6, ge=1, le=10)
     enable_web_search: bool = True
     max_search_results: int = Field(5, ge=1, le=20)
 

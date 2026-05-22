@@ -238,6 +238,46 @@ DANGEROUS_PATTERNS: list[re.Pattern[str]] = [
 UNSAFE_FIND_FLAGS = re.compile(r"\bfind\b[^;]*(\s-(delete|exec\s+rm|execdir\s+rm))")
 
 
+def _strip_quoted_strings(cmd: str) -> str:
+    """
+    Rimuove il contenuto delle stringhe quoted (single + double) dal comando,
+    rispettando gli escape. Lascia le virgolette esterne ma svuota il contenuto.
+
+    Serve a evitare falsi positivi nelle regex di safety. Esempio:
+        echo "sudo apt update"  →  echo ""
+    Senza questo, `\\bsudo\\b` matcha la `sudo` dentro la stringa e classifica
+    `echo` come pericoloso.
+
+    Funziona riga per riga sui caratteri (no shlex perché vogliamo preservare
+    la struttura per le regex successive — separatori, redirezioni, ecc.).
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(cmd):
+        c = cmd[i]
+        if c == '"' or c == "'":
+            quote = c
+            out.append(quote)
+            i += 1
+            # avanza fino alla chiusura, rispettando \" o \' (solo per ")
+            while i < len(cmd):
+                if quote == '"' and cmd[i] == "\\" and i + 1 < len(cmd):
+                    # in double-quoted, \ può fare escape
+                    i += 2
+                    continue
+                if cmd[i] == quote:
+                    out.append(quote)
+                    i += 1
+                    break
+                i += 1
+            # nota: se la stringa non chiude mai, terminiamo il loop senza
+            # aggiungere niente alla output — comportamento accettabile
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
 def _first_word(cmd: str) -> str:
     """Estrae il nome del comando (skipping env-var inline tipo FOO=bar cmd)."""
     parts = shlex.split(cmd, posix=True) if cmd.strip() else []
@@ -275,31 +315,37 @@ def _classify(cmd: str, *, allow_sudo: bool) -> RiskLevel:
     if not stripped:
         return RiskLevel.BLOCKED
 
+    # Per le regex di safety usiamo il comando con le stringhe quoted SVUOTATE.
+    # Così `echo "sudo apt"` non viene classificato come pericoloso a causa
+    # del contenuto della stringa. La classificazione del prefisso (_first_word)
+    # continua a usare `stripped` originale perché non guarda dentro le stringhe.
+    safety_view = _strip_quoted_strings(stripped)
+
     # 1) BLOCKED patterns hard
     for pat in BLOCKED_PATTERNS:
-        if pat.search(stripped):
+        if pat.search(safety_view):
             return RiskLevel.BLOCKED
 
     # 2) sudo / su senza permesso
-    if re.search(r"\bsudo\b|\bsu\s+-", stripped) and not allow_sudo:
+    if re.search(r"\bsudo\b|\bsu\s+-", safety_view) and not allow_sudo:
         return RiskLevel.BLOCKED
 
     # 3) DANGEROUS patterns
     for pat in DANGEROUS_PATTERNS:
-        if pat.search(stripped):
+        if pat.search(safety_view):
             return RiskLevel.DANGEROUS
 
     # 4) find con -delete / -exec rm → non più safe
-    if UNSAFE_FIND_FLAGS.search(stripped):
+    if UNSAFE_FIND_FLAGS.search(safety_view):
         return RiskLevel.MODERATE
 
     # 5) redirezioni a file / pipe in scrittura → moderate
     #    (gestiamo solo le redirezioni "ovvie": >, >>, &>, > tee)
-    if re.search(r"(^|\s)>>?\s*[^&\s]", stripped) or re.search(r"\|\s*tee\b", stripped):
+    if re.search(r"(^|\s)>>?\s*[^&\s]", safety_view) or re.search(r"\|\s*tee\b", safety_view):
         return RiskLevel.MODERATE
 
     # 6) compound commands (&&, ||, ;, |) → controlla ogni "leg"
-    if re.search(r"(\|\||\&\&|;)", stripped):
+    if re.search(r"(\|\||\&\&|;)", safety_view):
         # split grossolano sui separatori top-level
         legs = re.split(r"\|\||\&\&|;", stripped)
         worst = RiskLevel.SAFE
@@ -448,10 +494,11 @@ CONTESTO CORRENTE:
 - working directory: {cwd}
 - shell: bash
 - OS: Linux
+- locale: {locale}
 - safe_dirs (directory in cui l'utente ti permette di operare): {safe_dirs}
 - sudo permesso: {allow_sudo}
 
-REGOLE FONDAMENTALI:
+{xdg_paths_block}REGOLE FONDAMENTALI:
 1. Rispondi SEMPRE e SOLO in JSON valido, in una di queste due forme:
 
    {{"action": "search", "query": "stringa di ricerca"}}
@@ -460,6 +507,11 @@ REGOLE FONDAMENTALI:
 
    {{"action": "propose", "command": "il_comando_shell", \
 "rationale": "spiegazione breve", "sources": ["url1", "url2"]}}
+
+   Qualunque altra risposta è un errore. NON spiegare a parole, NON dire \
+"non posso fare X": se non puoi fare quello che chiede l'utente, proponi \
+comunque un comando `echo "..."` che spiega il problema, e classificalo \
+come safe.
 
 2. Per comandi non banali (qualsiasi cosa oltre `ls`, `cd`, `pwd`, `cat`, \
 `echo`, `whoami`, `date`), devi PRIMA fare almeno una ricerca web per \
@@ -475,11 +527,23 @@ emetti l'azione "propose".
    - una sola riga (puoi usare && o ; per concatenare)
    - niente comandi distruttivi (rm -rf /, dd, mkfs, ecc.): saranno rifiutati a monte
    - se l'utente NON ti ha dato il permesso per sudo (vedi sopra), NON usarlo
+   - usa i percorsi XDG sopra elencati per le cartelle utente: NON inventare
+     `/home/X/Desktop` o `/home/X/Downloads` se la lista XDG dice `Scrivania`
+     o `Scaricati`
 
 5. Nel campo `rationale` spiega in italiano in 1-2 frasi cosa fa il comando.
 
 6. Nel campo `sources` metti gli URL delle ricerche che hai usato per \
 costruire il comando (vuoto se non hai cercato).
+
+7. META-ISTRUZIONI DELL'UTENTE: se l'utente dice "correggi/modifica/riprova/\
+cambia il comando precedente" o simili, NON cercare un binario chiamato \
+"correggi": guarda i turni precedenti nella conversazione, identifica l'ultimo \
+comando che ha avuto un problema (exit_code != 0 o errore in stderr) o quello \
+che l'utente vuole cambiare, e produci una versione corretta nel campo \
+`command`. Il `rationale` deve spiegare COSA hai cambiato rispetto al \
+precedente. Esempi di trigger: "correggi", "modifica", "riprova con", \
+"cambia in", "usa X invece di Y".
 
 Niente testo fuori dal JSON. Nessun commento, nessuna spiegazione esterna.
 """
@@ -618,6 +682,16 @@ class TerminalAgent:
         # think:true, tipo gemma3).
         self._model_override: Optional[str] = None
 
+        # Locale corrente (es. "it_IT.UTF-8"). Determinato all'avvio.
+        # Passato nel system prompt per dare contesto al modello.
+        self._locale: str = os.environ.get("LANG", "C")
+
+        # Percorsi XDG dell'utente, popolati esternamente via set_xdg_paths().
+        # Esempio: {"Scrivania": "/home/mauro/Scrivania",
+        #           "Scaricati": "/home/mauro/Scaricati", ...}.
+        # Se vuoto, il system prompt non include la sezione "PERCORSI UTENTE".
+        self._xdg_paths: dict[str, str] = {}
+
         self._loaded: bool = False
 
     # -----------------------------------------------------------------------
@@ -684,6 +758,20 @@ class TerminalAgent:
         self._model_override = name or None
         logger.info("terminal_agent | model_override → {}", self._model_override)
 
+    def set_xdg_paths(self, paths: dict[str, str]) -> None:
+        """
+        Imposta i percorsi XDG dell'utente (dict label → path assoluto).
+        Esempio: {"Scrivania": "/home/mauro/Scrivania", ...}.
+        Vengono inclusi nel system prompt per evitare che il modello inventi
+        percorsi inglesi su locale non-EN.
+        """
+        self._xdg_paths = dict(paths or {})
+        logger.info("terminal_agent | xdg_paths → {} chiavi", len(self._xdg_paths))
+
+    def set_locale(self, locale: str) -> None:
+        """Imposta il locale corrente (es. 'it_IT.UTF-8') per il system prompt."""
+        self._locale = locale or "C"
+
     def reset(self) -> None:
         """Resetta cwd, history dei turni e ultima proposta."""
         self._cwd = str(Path(self._cfg.initial_cwd or os.path.expanduser("~")).resolve())
@@ -708,24 +796,54 @@ class TerminalAgent:
 
         t0 = time.monotonic()
 
+        # Costruisci il blocco "PERCORSI UTENTE" se abbiamo i path XDG.
+        # Lo includiamo nel system prompt come istruzione esplicita —
+        # vincere il bias del modello che propone sempre "Desktop"/"Downloads"
+        # anche su locale italiano.
+        if self._xdg_paths:
+            xdg_lines = ["PERCORSI UTENTE (usa SEMPRE questi, non i nomi inglesi):"]
+            for k, v in self._xdg_paths.items():
+                if v:
+                    xdg_lines.append(f"- {k}: {v}")
+            xdg_block = "\n".join(xdg_lines) + "\n\n"
+        else:
+            xdg_block = ""
+
         system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
             cwd=self._cwd,
+            locale=self._locale,
+            xdg_paths_block=xdg_block,
             safe_dirs=", ".join(self._safe_dirs),
             allow_sudo=("sì" if self._allow_sudo else "no"),
         )
 
         messages: list[Message] = []
 
-        # Storia: ultimi 2 turni completati, come contesto utente→assistant
+        # Storia: ultimi 2 turni completati, come contesto utente→assistant.
+        # Passiamo un summary RICCO: comando, exit_code, stdout E stderr troncati,
+        # analisi. Serve perché l'utente può dire "correggi il comando precedente"
+        # e il modello deve avere abbastanza contesto per capire cosa correggere.
         for past in self._turn_history[-2:]:
             messages.append(Message(role=Role.USER, content=past.user_request))
             if past.proposal and past.result:
-                summary = (
-                    f"[esecuzione precedente — exit={past.result.exit_code}]\n"
-                    f"$ {past.proposal.command}\n"
-                    f"{past.result.stdout[:500]}"
-                )
+                parts = [
+                    f"[esecuzione precedente — exit={past.result.exit_code}]",
+                    f"$ {past.proposal.command}",
+                ]
+                if past.result.stdout:
+                    parts.append(f"stdout: {past.result.stdout[:400]}")
+                if past.result.stderr:
+                    parts.append(f"stderr: {past.result.stderr[:400]}")
+                if past.analysis:
+                    parts.append(f"analisi: {past.analysis[:300]}")
+                summary = "\n".join(parts)
                 messages.append(Message(role=Role.ASSISTANT, content=summary))
+            elif past.proposal and past.skipped:
+                messages.append(Message(
+                    role=Role.ASSISTANT,
+                    content=f"[proposta non eseguita — annullata o in attesa]\n"
+                            f"$ {past.proposal.command}",
+                ))
 
         # Turno corrente
         messages.append(Message(role=Role.USER, content=user_request))

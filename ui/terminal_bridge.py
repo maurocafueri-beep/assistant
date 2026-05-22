@@ -31,6 +31,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import shutil
+import subprocess
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
@@ -139,6 +142,26 @@ class TerminalBridge:
         )
         await self._agent.load()
         self._loaded = True
+
+        # ── Localizzazione: percorsi XDG ─────────────────────────────────
+        # Detect dei percorsi utente nella lingua/configurazione corrente.
+        # Su Ubuntu IT: Scrivania/Scaricati/Documenti/Immagini/Video/Musica.
+        # I path vengono passati all'agent che li include nel system prompt,
+        # così il modello non inventa più Desktop/Downloads in inglese.
+        try:
+            xdg = _detect_xdg_user_paths()
+            if xdg:
+                self._agent.set_xdg_paths(xdg)
+        except Exception as exc:
+            logger.debug("ui.terminal_bridge | detect xdg: {}", exc)
+
+        # Locale corrente
+        try:
+            import locale as _locale
+            current_locale = _locale.getlocale()[0] or os.environ.get("LANG", "C")
+            self._agent.set_locale(current_locale)
+        except Exception as exc:
+            logger.debug("ui.terminal_bridge | detect locale: {}", exc)
 
         # Scegli il modello iniziale: il primo visibile della lista
         # filtrata, oppure settings.ollama.chat_model se compatibile.
@@ -466,3 +489,58 @@ class TerminalBridge:
                 f"history={len(self._history)} pending={len(self._pending)}>"
             )
         return "<TerminalBridge [non caricato]>"
+
+
+# ---------------------------------------------------------------------------
+# Detect dei percorsi utente localizzati (XDG user-dirs)
+# ---------------------------------------------------------------------------
+
+# Mapping chiave standard XDG → label leggibile.
+# `xdg-user-dir KEY` ritorna il path; se la cartella non esiste o la chiave
+# non è configurata, ritorna $HOME (lo trattiamo come "non disponibile").
+_XDG_KEYS: list[tuple[str, str]] = [
+    ("DESKTOP",     "Scrivania"),
+    ("DOWNLOAD",    "Scaricati"),
+    ("DOCUMENTS",   "Documenti"),
+    ("MUSIC",       "Musica"),
+    ("PICTURES",    "Immagini"),
+    ("VIDEOS",      "Video"),
+    ("TEMPLATES",   "Modelli"),
+    ("PUBLICSHARE", "Pubblici"),
+]
+
+
+def _detect_xdg_user_paths() -> dict[str, str]:
+    """
+    Detect dei percorsi utente XDG usando il binario `xdg-user-dir` standard
+    su Ubuntu/freedesktop. Ritorna un dict label → path assoluto.
+
+    Su locale italiano restituisce ad esempio:
+        {"Scrivania": "/home/mauro/Scrivania",
+         "Scaricati": "/home/mauro/Scaricati", ...}
+
+    Se `xdg-user-dir` non è disponibile o un path non è configurato (ritorna
+    $HOME), quella chiave viene omessa.
+
+    Non solleva eccezioni: in caso di errore ritorna {} e logga in debug.
+    """
+    if shutil.which("xdg-user-dir") is None:
+        logger.debug("ui.terminal_bridge | xdg-user-dir non trovato")
+        return {}
+
+    home = os.path.expanduser("~")
+    out: dict[str, str] = {}
+    for key, label in _XDG_KEYS:
+        try:
+            r = subprocess.run(
+                ["xdg-user-dir", key],
+                capture_output=True, text=True, timeout=2,
+            )
+            path = r.stdout.strip()
+            # xdg-user-dir ritorna $HOME se la chiave non è configurata
+            # oppure se la cartella è disabilitata.
+            if path and path != home and os.path.isdir(path):
+                out[label] = path
+        except Exception as exc:
+            logger.debug("ui.terminal_bridge | xdg-user-dir {}: {}", key, exc)
+    return out

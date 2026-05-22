@@ -43,6 +43,7 @@ from modules.terminal_agent.base_terminal_agent import (
     _first_word,
     _is_inside,
     _second_word,
+    _strip_quoted_strings,
     _truncate,
     _wrap_command_with_cwd_tracking,
 )
@@ -338,6 +339,81 @@ class TestClassify:
     def test_unknown_command_is_moderate(self):
         # comando non in nessuna lista → richiede conferma
         assert _classify("mysterytool --do-stuff", allow_sudo=False) == RiskLevel.MODERATE
+
+    # ── Fix D: stringhe quoted non devono triggerare regex di safety ──
+
+    def test_echo_with_sudo_inside_string_is_safe(self):
+        # echo "sudo apt" NON deve essere classificato come pericoloso.
+        # `echo` è safe e il contenuto della stringa è inerte.
+        assert _classify('echo "sudo apt"',                    allow_sudo=False) == RiskLevel.SAFE
+        assert _classify("echo 'sudo rm -rf /'",               allow_sudo=False) == RiskLevel.SAFE
+        assert _classify('echo "qui c\'è sudo dentro"',        allow_sudo=False) == RiskLevel.SAFE
+        assert _classify("printf '%s' 'sudo bla'",             allow_sudo=False) == RiskLevel.SAFE
+
+    def test_real_sudo_outside_string_still_blocked(self):
+        # Senza permesso sudo, il comando reale resta BLOCKED
+        assert _classify("sudo apt update",                    allow_sudo=False) == RiskLevel.BLOCKED
+        assert _classify('sudo echo "test"',                   allow_sudo=False) == RiskLevel.BLOCKED
+
+    def test_real_rm_outside_string_still_dangerous(self):
+        # Il comando vero `rm` resta dangerous anche se ci sono stringhe
+        assert _classify('rm file "with space.txt"',           allow_sudo=False) == RiskLevel.DANGEROUS
+
+    def test_blocked_pattern_inside_string_is_inert(self):
+        # `rm -rf /` dentro un'echo NON deve scatenare BLOCKED
+        assert _classify('echo "rm -rf /"',                    allow_sudo=False) == RiskLevel.SAFE
+
+    def test_redirect_inside_string_doesnt_count(self):
+        # `>` dentro stringa quoted non è una redirezione
+        assert _classify("echo 'a > b > c'",                   allow_sudo=False) == RiskLevel.SAFE
+        # Ma `>` fuori stringa sì
+        assert _classify("echo 'foo' > out",                   allow_sudo=False) == RiskLevel.MODERATE
+
+    def test_git_commit_with_dangerous_words_in_message_is_moderate(self):
+        # git commit -m "fix rm bug" è MODERATE (git commit non è safe),
+        # ma NON dangerous (il `rm` è dentro virgolette).
+        assert _classify('git commit -m "fix rm bug"',         allow_sudo=False) == RiskLevel.MODERATE
+        assert _classify("git commit -m 'sudo del pannello'",  allow_sudo=False) == RiskLevel.MODERATE
+
+
+# ---------------------------------------------------------------------------
+# _strip_quoted_strings — helper di safety
+# ---------------------------------------------------------------------------
+
+class TestStripQuotedStrings:
+    def test_double_quoted(self):
+        assert _strip_quoted_strings('echo "hello world"') == 'echo ""'
+
+    def test_single_quoted(self):
+        assert _strip_quoted_strings("echo 'hello'") == "echo ''"
+
+    def test_no_quotes_passthrough(self):
+        assert _strip_quoted_strings("ls -la /home") == "ls -la /home"
+
+    def test_empty(self):
+        assert _strip_quoted_strings("") == ""
+
+    def test_escaped_quotes_inside_double(self):
+        # `\"` dentro double-quoted non chiude la stringa
+        assert _strip_quoted_strings(r'echo "say \"hi\""') == 'echo ""'
+
+    def test_single_with_double_inside(self):
+        assert _strip_quoted_strings("echo 'with \"double\" inside'") == "echo ''"
+
+    def test_double_with_single_inside(self):
+        assert _strip_quoted_strings('echo "with \'single\' inside"') == 'echo ""'
+
+    def test_multiple_strings(self):
+        assert _strip_quoted_strings('echo "a" "b"') == 'echo "" ""'
+
+    def test_apostrophe_inside_double(self):
+        # apostrofo (`'`) dentro double-quoted è solo testo, non apre stringa
+        assert _strip_quoted_strings('echo "don\'t do it"') == 'echo ""'
+
+    def test_unclosed_string_no_crash(self):
+        # Stringa non chiusa: non solleva eccezioni
+        result = _strip_quoted_strings('echo "unclosed')
+        assert isinstance(result, str)
 
 
 # ---------------------------------------------------------------------------
