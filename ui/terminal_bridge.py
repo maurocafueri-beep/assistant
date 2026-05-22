@@ -1,0 +1,445 @@
+"""
+ui/terminal_bridge.py
+TerminalBridge — bridge tra il TerminalAgent e la UI web.
+
+Responsabilità:
+- Mantiene un'istanza di TerminalAgent caricata.
+- Gestisce un piccolo registro di proposte "in attesa di conferma"
+  (proposal_id → CommandProposal), così la UI può confermare/annullare
+  in modo asincrono.
+- Gestisce la lista dei modelli "thinking" mostrati nel selettore
+  della modalità terminale (filtro per family + overrides utente).
+- Espone metodi che ritornano dict JSON-ready per gli endpoint REST,
+  e fa broadcast WS dei cambi di stato (proposta, risultato, cwd, modello).
+
+Pattern: mirror semantico di UIBridge ma senza l'eredità da VoiceLoop:
+il terminale non usa TTS, non ha personalità né sessioni, non ha PTT
+proprio (la trascrizione STT arriva dal UIBridge che la devia qui
+quando _mode == "terminal").
+
+Lifecycle:
+    bridge = TerminalBridge(ws_manager=...)
+    await bridge.load()
+    ...
+    await bridge.aclose()
+
+In ui/app.py viene creato accanto a UIBridge e collegato:
+    ui_loop.set_terminal_bridge(terminal_bridge)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from dataclasses import asdict
+from pathlib import Path
+from typing import Any, Optional
+
+from config.settings import settings
+from core.logger import logger
+from modules.terminal_agent import (
+    AgentTurn,
+    CommandProposal,
+    CommandResult,
+    RiskLevel,
+    TerminalAgent,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers di serializzazione (dataclass del modulo → dict JSON-ready)
+# ---------------------------------------------------------------------------
+
+def _proposal_to_dict(p: CommandProposal) -> dict[str, Any]:
+    return {
+        "proposal_id":        p.proposal_id,
+        "command":            p.command,
+        "rationale":          p.rationale,
+        "risk_level":         p.risk_level.value,
+        "needs_confirmation": p.needs_confirmation,
+        "cwd":                p.cwd,
+        "search_used":        p.search_used,
+        "sources":            list(p.sources),
+    }
+
+
+def _result_to_dict(r: CommandResult) -> dict[str, Any]:
+    return {
+        "proposal_id": r.proposal_id,
+        "command":     r.command,
+        "exit_code":   r.exit_code,
+        "stdout":      r.stdout,
+        "stderr":      r.stderr,
+        "duration_ms": r.duration_ms,
+        "cwd_before":  r.cwd_before,
+        "cwd_after":   r.cwd_after,
+        "truncated":   r.truncated,
+        "success":     r.success,
+    }
+
+
+def _turn_to_dict(t: AgentTurn) -> dict[str, Any]:
+    return {
+        "user_request": t.user_request,
+        "proposal":     _proposal_to_dict(t.proposal) if t.proposal else None,
+        "result":       _result_to_dict(t.result)     if t.result   else None,
+        "analysis":     t.analysis,
+        "skipped":      t.skipped,
+        "error":        t.error,
+    }
+
+
+# ---------------------------------------------------------------------------
+# TerminalBridge
+# ---------------------------------------------------------------------------
+
+class TerminalBridge:
+    """
+    Bridge tra TerminalAgent e UI. Gestisce il ciclo propose → confirm/cancel
+    in modo asincrono via WebSocket.
+    """
+
+    # ── lifecycle ────────────────────────────────────────────────────────
+
+    def __init__(self, ws_manager: Any) -> None:
+        self._ws = ws_manager
+        self._agent: Optional[TerminalAgent] = None
+        self._loaded: bool = False
+
+        # proposte in attesa di conferma: proposal_id → CommandProposal
+        self._pending: dict[str, CommandProposal] = {}
+
+        # history dei turni completati (memoria di sessione, no disco)
+        self._history: list[AgentTurn] = []
+
+        # modello attivo per il terminale. Default: settings.ollama.chat_model
+        # se compatibile, altrimenti il primo modello visibile.
+        self._current_model: str = settings.ollama.chat_model
+
+        # whitelist family per i modelli "thinking"
+        self._thinking_families: list[str] = list(
+            getattr(settings.terminal_agent, "thinking_families",
+                    ["qwen35", "qwen35moe", "qwen3", "qwen3moe"])
+        )
+
+        # overrides utente: {"hidden": ["model:tag", ...]}
+        # popolato da ui/server.py da ui-settings.json
+        self._hidden_models: set[str] = set()
+
+    async def load(self) -> None:
+        if self._loaded:
+            return
+
+        # crea il TerminalAgent con il modello corrente
+        self._agent = TerminalAgent(
+            model_role=None,  # default da settings, override via switch_model
+        )
+        await self._agent.load()
+        self._loaded = True
+
+        logger.info(
+            "ui.terminal_bridge | inizializzato | cwd={} model={}",
+            self._agent.cwd, self._current_model,
+        )
+
+    async def aclose(self) -> None:
+        if self._agent is not None:
+            try:
+                await self._agent.aclose()
+            except Exception as exc:
+                logger.debug("ui.terminal_bridge | aclose agent: {}", exc)
+            self._agent = None
+        self._loaded = False
+
+    # ── property / introspezione ─────────────────────────────────────────
+
+    @property
+    def cwd(self) -> str:
+        return self._agent.cwd if self._agent else ""
+
+    @property
+    def current_model(self) -> str:
+        return self._current_model
+
+    @property
+    def history_count(self) -> int:
+        return len(self._history)
+
+    @property
+    def pending_count(self) -> int:
+        return len(self._pending)
+
+    # ── modelli visibili ────────────────────────────────────────────────
+
+    def set_hidden_models(self, hidden: list[str]) -> None:
+        """Sovrascrive la lista dei modelli nascosti dall'utente."""
+        self._hidden_models = set(hidden or [])
+
+    def is_thinking_family(self, family: str) -> bool:
+        return family in self._thinking_families
+
+    async def list_available_models(self) -> list[dict[str, Any]]:
+        """
+        Ritorna tutti i modelli installati su Ollama che appartengono a
+        un thinking-family. Ogni elemento contiene:
+            {name, family, parameter_size, hidden: bool, current: bool}
+        Non solleva: se Ollama non risponde, ritorna [].
+        """
+        try:
+            import httpx
+            base = settings.ollama.base_url.rstrip("/")
+            async with httpx.AsyncClient(timeout=5.0) as cli:
+                r = await cli.get(f"{base}/api/tags")
+                r.raise_for_status()
+                data = r.json()
+        except Exception as exc:
+            logger.warning("ui.terminal_bridge | list_available_models: {}", exc)
+            return []
+
+        out: list[dict[str, Any]] = []
+        for m in data.get("models", []):
+            name    = m.get("name", "")
+            details = m.get("details", {})
+            family  = details.get("family", "")
+            psize   = details.get("parameter_size", "")
+            if not name:
+                continue
+            if not self.is_thinking_family(family):
+                continue
+            out.append({
+                "name":           name,
+                "family":         family,
+                "parameter_size": psize,
+                "hidden":         name in self._hidden_models,
+                "current":        name == self._current_model,
+            })
+        # ordine: visibili prima, poi alfabetico
+        out.sort(key=lambda x: (x["hidden"], x["name"]))
+        return out
+
+    async def list_visible_models(self) -> list[str]:
+        """Solo i nomi dei modelli mostrati nel selettore (non nascosti)."""
+        all_models = await self.list_available_models()
+        return [m["name"] for m in all_models if not m["hidden"]]
+
+    async def switch_model(self, name: str) -> bool:
+        """
+        Cambia il modello per le prossime chiamate. Verifica che sia
+        nella lista visibile. Ritorna True se ok.
+        """
+        visible = await self.list_visible_models()
+        if name not in visible:
+            logger.warning(
+                "ui.terminal_bridge | switch_model rifiutato: '{}' non visibile",
+                name,
+            )
+            return False
+        self._current_model = name
+        # Forziamo il modello via settings.ollama.chat_model — coerente con
+        # come UIBridge.switch_model() già fa per la modalità chat.
+        try:
+            settings.ollama.chat_model = name
+        except Exception as exc:
+            logger.warning("ui.terminal_bridge | settings.chat_model: {}", exc)
+        await self._broadcast({"type": "terminal.model", "name": name})
+        logger.info("ui.terminal_bridge | modello → {}", name)
+        return True
+
+    # ── flusso propose / confirm / cancel ────────────────────────────────
+
+    async def propose(self, user_request: str) -> dict[str, Any]:
+        """
+        Chiede una proposta all'agente. Se è auto-eseguibile (safe),
+        la esegue subito ed esegue anche analyze; altrimenti la mette
+        in pending e ritorna solo la proposta.
+
+        Ritorna sempre un dict serializzabile:
+            {
+              "turn": <AgentTurn>,            # con proposal+result+analysis se safe
+              "needs_confirmation": bool,
+            }
+        oppure
+            {"error": "..."}
+        """
+        self._require_loaded()
+        user_request = (user_request or "").strip()
+        if not user_request:
+            return {"error": "richiesta vuota"}
+
+        # Genera la proposta
+        try:
+            proposal = await self._agent.propose(user_request)
+        except Exception as exc:
+            logger.warning("ui.terminal_bridge | propose fallito: {}", exc)
+            await self._broadcast({"type": "terminal.error", "message": str(exc)})
+            return {"error": str(exc)}
+
+        # Broadcast della proposta SEMPRE (così la UI la vede appena pronta)
+        await self._broadcast({
+            "type":     "terminal.proposal",
+            "proposal": _proposal_to_dict(proposal),
+        })
+
+        # Se richiede conferma → in pending, l'utente deciderà
+        if proposal.needs_confirmation:
+            self._pending[proposal.proposal_id] = proposal
+            turn = AgentTurn(
+                user_request=user_request,
+                proposal=proposal,
+                skipped=True,
+            )
+            return {
+                "turn":               _turn_to_dict(turn),
+                "needs_confirmation": True,
+            }
+
+        # SAFE → auto-execute + analyze immediatamente
+        turn = await self._execute_and_analyze(proposal, user_request)
+        return {
+            "turn":               _turn_to_dict(turn),
+            "needs_confirmation": False,
+        }
+
+    async def confirm(self, proposal_id: str) -> dict[str, Any]:
+        """
+        Conferma una proposta in attesa: esegue + analizza. Ritorna il turno.
+        """
+        self._require_loaded()
+        proposal = self._pending.pop(proposal_id, None)
+        if proposal is None:
+            return {"error": f"proposta non trovata: {proposal_id}"}
+
+        # Usa la richiesta originale se l'abbiamo (non la salviamo nel
+        # CommandProposal, quindi qui ripieghiamo su una stringa generica)
+        turn = await self._execute_and_analyze(proposal, user_request="(conferma)")
+        return {
+            "turn":               _turn_to_dict(turn),
+            "needs_confirmation": False,
+        }
+
+    async def cancel(self, proposal_id: str) -> dict[str, Any]:
+        """Annulla una proposta in attesa, niente esecuzione."""
+        proposal = self._pending.pop(proposal_id, None)
+        if proposal is None:
+            return {"ok": False, "error": "proposta non in attesa"}
+        await self._broadcast({
+            "type":        "terminal.cancelled",
+            "proposal_id": proposal_id,
+        })
+        logger.info("ui.terminal_bridge | proposta '{}' annullata", proposal_id)
+        return {"ok": True}
+
+    async def _execute_and_analyze(
+        self,
+        proposal: CommandProposal,
+        user_request: str,
+    ) -> AgentTurn:
+        """Helper interno: esegue + analizza, broadcast, history. Non solleva."""
+        turn = AgentTurn(user_request=user_request, proposal=proposal)
+
+        cwd_before = self._agent.cwd
+        try:
+            result = await self._agent.execute(proposal, confirmed=True)
+            turn.result = result
+        except Exception as exc:
+            turn.error = f"execute: {exc}"
+            logger.warning("ui.terminal_bridge | execute fallito: {}", exc)
+            self._history.append(turn)
+            await self._broadcast({
+                "type":  "terminal.error",
+                "message": turn.error,
+            })
+            return turn
+
+        # broadcast cwd se cambiata
+        if self._agent.cwd != cwd_before:
+            await self._broadcast({
+                "type": "terminal.cwd",
+                "cwd":  self._agent.cwd,
+            })
+
+        # analyze in coda
+        try:
+            turn.analysis = await self._agent.analyze(
+                result, user_request=user_request,
+            )
+        except Exception as exc:
+            turn.error = f"analyze: {exc}"
+            logger.warning("ui.terminal_bridge | analyze fallito: {}", exc)
+
+        self._history.append(turn)
+
+        await self._broadcast({
+            "type":     "terminal.result",
+            "result":   _result_to_dict(result),
+            "analysis": turn.analysis,
+        })
+        return turn
+
+    # ── input vocale (Q3 = B) ────────────────────────────────────────────
+
+    async def handle_voice_input(self, text: str) -> None:
+        """
+        Riceve una trascrizione STT deviata dal UIBridge. In modalità
+        terminale NON eseguiamo direttamente: emettiamo un messaggio
+        WS che la UI userà per popolare il box di input. L'utente preme
+        Invio per confermare e parte una POST /api/terminal/propose.
+        """
+        text = (text or "").strip()
+        if not text:
+            return
+        await self._broadcast({
+            "type": "terminal.transcription",
+            "text": text,
+        })
+        logger.info("ui.terminal_bridge | transcription deviata: {}", text[:80])
+
+    # ── reset ────────────────────────────────────────────────────────────
+
+    async def reset(self) -> None:
+        """Resetta cwd, history, pending. Mantiene il modello corrente."""
+        self._require_loaded()
+        self._agent.reset()
+        self._pending.clear()
+        self._history.clear()
+        await self._broadcast({
+            "type": "terminal.reset",
+            "cwd":  self._agent.cwd,
+        })
+        logger.info("ui.terminal_bridge | reset")
+
+    # ── stato per ws/api ─────────────────────────────────────────────────
+
+    def state_payload(self) -> dict[str, Any]:
+        """
+        Snapshot completo dello stato del bridge — usato in /api/terminal/state
+        e nel payload init del WS.
+        """
+        return {
+            "cwd":           self.cwd,
+            "current_model": self._current_model,
+            "history_count": len(self._history),
+            "pending_count": len(self._pending),
+            "pending":       [_proposal_to_dict(p) for p in self._pending.values()],
+            "history":       [_turn_to_dict(t)     for t in self._history[-20:]],
+        }
+
+    # ── interno ──────────────────────────────────────────────────────────
+
+    def _require_loaded(self) -> None:
+        if not self._loaded or self._agent is None:
+            raise RuntimeError("TerminalBridge non caricato — chiama load()")
+
+    async def _broadcast(self, payload: dict[str, Any]) -> None:
+        try:
+            await self._ws.broadcast(payload)
+        except Exception as exc:
+            logger.debug("ui.terminal_bridge | broadcast fallito: {}", exc)
+
+    def __repr__(self) -> str:
+        if self._loaded:
+            return (
+                f"<TerminalBridge cwd='{self.cwd}' model='{self._current_model}' "
+                f"history={len(self._history)} pending={len(self._pending)}>"
+            )
+        return "<TerminalBridge [non caricato]>"

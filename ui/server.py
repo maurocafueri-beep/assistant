@@ -64,6 +64,12 @@ class PersBody(BaseModel):   name: str
 class ModelBody(BaseModel):  name: str
 class VoiceBody(BaseModel):  name: str
 class TTSBody(BaseModel):    enabled: bool
+class ModeBody(BaseModel):   mode: str
+class TermProposeBody(BaseModel):       text: str
+class TermProposalIdBody(BaseModel):    proposal_id: str
+class TermModelVisibilityBody(BaseModel):
+    name:    str
+    visible: bool
 
 def create_app(ws_manager: "WSManager") -> tuple[FastAPI, dict]:
     app   = FastAPI(title="local-assistant", docs_url=None, redoc_url=None)
@@ -78,6 +84,8 @@ def create_app(ws_manager: "WSManager") -> tuple[FastAPI, dict]:
         await ws_manager.connect(ws)
         loop: "UIBridge | None" = state["loop"]
         if loop is not None:
+            term = state.get("terminal")
+            term_state = term.state_payload() if term else None
             await ws.send_text(json.dumps({
                 "type":"init", "state":loop.state, "ptt_key":loop.ptt_key,
                 "session":loop.session_id,
@@ -89,6 +97,8 @@ def create_app(ws_manager: "WSManager") -> tuple[FastAPI, dict]:
                 "voice":await loop.active_voice_from_server(),
                 "voices":await loop.list_voices(),
                 "tts_enabled":loop.tts_enabled,
+                "mode":loop.mode,
+                "terminal":term_state,
                 "stats":loop.stats.to_log_dict(),
             }))
         try:
@@ -100,11 +110,15 @@ def create_app(ws_manager: "WSManager") -> tuple[FastAPI, dict]:
     async def status():
         loop: "UIBridge | None" = state["loop"]
         if loop is None: return JSONResponse({"state":"loading"})
+        term = state.get("terminal")
+        term_state = term.state_payload() if term else None
         return JSONResponse({"state":loop.state,"session":loop.session_id,
             "ptt_key":loop.ptt_key,"personality":loop.active_personality,"model":loop.active_model,
                 "voice":await loop.active_voice_from_server(),
                 "voices":await loop.list_voices(),
                 "tts_enabled":loop.tts_enabled,
+                "mode":loop.mode,
+                "terminal":term_state,
             "stats":loop.stats.to_log_dict()})
 
     @app.post("/api/send")
@@ -243,5 +257,94 @@ def create_app(ws_manager: "WSManager") -> tuple[FastAPI, dict]:
     @app.get("/api/settings")
     async def settings():
         return JSONResponse(_load_ui_settings())
+
+    # ── Mode (chat | terminal) ───────────────────────────────────────
+    @app.get("/api/mode")
+    async def mode_get():
+        loop = state["loop"]
+        if loop is None: return JSONResponse({"mode":"chat"})
+        return JSONResponse({"mode":loop.mode})
+
+    @app.post("/api/mode")
+    async def mode_set(body: ModeBody):
+        loop = state["loop"]
+        if loop is None: return JSONResponse({"ok":False,"error":"loop non pronto"},status_code=503)
+        if body.mode not in ("chat","terminal"):
+            return JSONResponse({"ok":False,"error":f"mode non valido: {body.mode!r}"},status_code=400)
+        ok = await loop.set_mode(body.mode)
+        if not ok: return JSONResponse({"ok":False},status_code=400)
+        _save_ui_settings({"mode": body.mode})
+        return JSONResponse({"ok":True,"mode":body.mode})
+
+    # ── Terminal endpoints ───────────────────────────────────────────
+    @app.get("/api/terminal/state")
+    async def terminal_state():
+        term = state.get("terminal")
+        if term is None: return JSONResponse({"ok":False,"error":"terminal non pronto"},status_code=503)
+        return JSONResponse({"ok":True, **term.state_payload()})
+
+    @app.post("/api/terminal/propose")
+    async def terminal_propose(body: TermProposeBody):
+        term = state.get("terminal")
+        if term is None: return JSONResponse({"ok":False,"error":"terminal non pronto"},status_code=503)
+        result = await term.propose(body.text)
+        if "error" in result:
+            return JSONResponse({"ok":False, **result}, status_code=400)
+        return JSONResponse({"ok":True, **result})
+
+    @app.post("/api/terminal/confirm")
+    async def terminal_confirm(body: TermProposalIdBody):
+        term = state.get("terminal")
+        if term is None: return JSONResponse({"ok":False,"error":"terminal non pronto"},status_code=503)
+        result = await term.confirm(body.proposal_id)
+        if "error" in result:
+            return JSONResponse({"ok":False, **result}, status_code=404)
+        return JSONResponse({"ok":True, **result})
+
+    @app.post("/api/terminal/cancel")
+    async def terminal_cancel(body: TermProposalIdBody):
+        term = state.get("terminal")
+        if term is None: return JSONResponse({"ok":False,"error":"terminal non pronto"},status_code=503)
+        return JSONResponse(await term.cancel(body.proposal_id))
+
+    @app.post("/api/terminal/reset")
+    async def terminal_reset():
+        term = state.get("terminal")
+        if term is None: return JSONResponse({"ok":False,"error":"terminal non pronto"},status_code=503)
+        await term.reset()
+        return JSONResponse({"ok":True})
+
+    # Modelli del terminale: lista completa con flag hidden/current
+    @app.get("/api/terminal/models")
+    async def terminal_models():
+        term = state.get("terminal")
+        if term is None: return JSONResponse({"models":[],"current":None})
+        mdls = await term.list_available_models()
+        return JSONResponse({"models":mdls,"current":term.current_model})
+
+    @app.post("/api/terminal/model")
+    async def terminal_model_switch(body: ModelBody):
+        term = state.get("terminal")
+        if term is None: return JSONResponse({"ok":False,"error":"terminal non pronto"},status_code=503)
+        ok = await term.switch_model(body.name)
+        if not ok: return JSONResponse({"ok":False,"error":"modello non valido o nascosto"},status_code=400)
+        _save_ui_settings({"terminal_model": body.name})
+        return JSONResponse({"ok":True,"name":body.name})
+
+    @app.post("/api/terminal/models/visibility")
+    async def terminal_models_visibility(body: TermModelVisibilityBody):
+        term = state.get("terminal")
+        if term is None: return JSONResponse({"ok":False,"error":"terminal non pronto"},status_code=503)
+        # Carica lista corrente di nascosti, applica delta, persiste
+        s = _load_ui_settings() or {}
+        hidden = set(s.get("terminal_hidden_models", []))
+        if body.visible:
+            hidden.discard(body.name)
+        else:
+            hidden.add(body.name)
+        hidden_list = sorted(hidden)
+        term.set_hidden_models(hidden_list)
+        _save_ui_settings({"terminal_hidden_models": hidden_list})
+        return JSONResponse({"ok":True,"hidden":hidden_list})
 
     return app, state

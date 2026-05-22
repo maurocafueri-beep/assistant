@@ -81,6 +81,19 @@ class TerminalAgentSettings(BaseSettings):
     use_thinking_propose: bool = True
     use_thinking_analyze: bool = False
 
+    # Family Ollama considerate "thinking" — solo i modelli di queste family
+    # appaiono nel selettore della modalità terminale (ulteriormente filtrati
+    # dalla blacklist utente in ui-settings.json). Override via env:
+    #     TERMINAL_AGENT_THINKING_FAMILIES=qwen35,qwen3,deepseek
+    thinking_families: list[str] = ["qwen35", "qwen35moe", "qwen3", "qwen3moe"]
+
+    @field_validator("thinking_families", mode="before")
+    @classmethod
+    def parse_families(cls, v):
+        if isinstance(v, str):
+            return [f.strip() for f in v.split(",") if f.strip()]
+        return v
+
     # Esecuzione comando
     command_timeout: int = Field(30, ge=1, le=600)
     max_output_bytes: int = Field(64 * 1024, ge=1024)

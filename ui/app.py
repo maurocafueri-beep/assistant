@@ -85,6 +85,14 @@ class _AsyncWorker(QObject):
                 personality = self._personality,
             )
 
+            # ── TerminalBridge per la modalità terminale ────────────────
+            # Lo creiamo qui ma lo carichiamo lazy al primo accesso
+            # alla modalità terminale, così non blocchiamo l'avvio.
+            from ui.terminal_bridge import TerminalBridge
+            terminal_bridge = TerminalBridge(ws_manager=ws_mgr)
+            ui_loop.set_terminal_bridge(terminal_bridge)
+            state["terminal"] = terminal_bridge
+
             # Collega la persistenza: ogni messaggio salva su disco
             try:
                 from ui.server import _load_sessions_disk, _save_sessions_disk
@@ -190,11 +198,49 @@ class _AsyncWorker(QObject):
                     except Exception as exc:
                         logger.warning("ui.app | restore tts_enabled: {}", exc)
 
-            async with ui_loop:
-                # ui_loop.load() è stato eseguito da __aenter__:
-                # ora _orch e _tts sono pronti → ripristino sicuro.
-                await _restore_ui_settings()
-                await asyncio.gather(ui_loop.run(), server_task)
+                # ── Terminale: hidden_models + modello + modalità ────────
+                # Sempre applichiamo i nascosti (anche se restiamo in chat),
+                # così quando l'utente passerà a terminal la lista è giusta.
+                try:
+                    hidden = s.get("terminal_hidden_models") or []
+                    if isinstance(hidden, list):
+                        terminal_bridge.set_hidden_models(hidden)
+                except Exception as exc:
+                    logger.warning("ui.app | restore terminal_hidden_models: {}", exc)
+
+                saved_mode = s.get("mode")
+                if saved_mode == "terminal":
+                    # Carica il TerminalBridge ORA e ripristina il modello
+                    try:
+                        await terminal_bridge.load()
+                        saved_term_model = s.get("terminal_model")
+                        if saved_term_model:
+                            ok = await terminal_bridge.switch_model(saved_term_model)
+                            if not ok:
+                                logger.info(
+                                    "ui.app | modello terminale salvato non più "
+                                    "disponibile: '{}'", saved_term_model,
+                                )
+                        await ui_loop.set_mode("terminal")
+                        logger.info("ui.app | modalità ripristinata → terminal")
+                    except Exception as exc:
+                        logger.warning(
+                            "ui.app | restore terminal mode fallito: {} — "
+                            "resto in chat", exc,
+                        )
+
+            try:
+                async with ui_loop:
+                    # ui_loop.load() è stato eseguito da __aenter__:
+                    # ora _orch e _tts sono pronti → ripristino sicuro.
+                    await _restore_ui_settings()
+                    await asyncio.gather(ui_loop.run(), server_task)
+            finally:
+                # Chiudi il TerminalBridge se è stato caricato (idempotente)
+                try:
+                    await terminal_bridge.aclose()
+                except Exception as exc:
+                    logger.debug("ui.app | aclose terminal_bridge: {}", exc)
 
         try:
             asyncio.run(_main())

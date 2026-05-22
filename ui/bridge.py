@@ -66,6 +66,38 @@ class UIBridge(VoiceLoop):
         self._persist_cb = None   # set by app.py: callable(sessions_dict)
         self._register_session(self._session_id, name="Chat 1")
 
+        # ── Modalità (chat | terminal) ───────────────────────────────────
+        # Switch top-level dell'UI. In "terminal" il flusso turn-by-turn
+        # NON arriva a _stream_and_speak: viene deviato a _terminal_bridge.
+        # Le primitive STT/TTS restano caricate (PTT continua a funzionare).
+        self._mode: str = "chat"
+        self._terminal_bridge = None   # set da app.py: TerminalBridge instance
+
+    def set_terminal_bridge(self, bridge) -> None:
+        """app.py registra qui il TerminalBridge per la modalità terminale."""
+        self._terminal_bridge = bridge
+
+    @property
+    def mode(self) -> str:
+        return self._mode
+
+    async def set_mode(self, mode: str) -> bool:
+        """
+        Cambia modalità globale ('chat' | 'terminal'). Broadcast WS.
+        In modalità terminale il TTS è forzato OFF (regola di sicurezza
+        non bypassabile da set_tts_enabled), per restituire alla shell
+        un comportamento prevedibile.
+        """
+        if mode not in ("chat", "terminal"):
+            return False
+        if mode == self._mode:
+            return True
+        self._mode = mode
+        # Notifica subito la UI così cambia interfaccia
+        self._emit({"type": "mode", "mode": mode})
+        logger.info("ui.bridge | mode → {}", mode)
+        return True
+
     def set_persist_callback(self, cb) -> None:
         """app.py registra qui la funzione che salva _sessions su disco."""
         self._persist_cb = cb
@@ -324,6 +356,17 @@ class UIBridge(VoiceLoop):
 
         user_text = stt_result.text.strip()
         if not user_text:
+            return
+
+        # ── Deviazione modalità terminale ──────────────────────────────
+        # In "terminal" la trascrizione NON entra nel turn chat: viene
+        # passata al TerminalBridge che la mostra nel box di input.
+        # L'utente premerà Invio per confermare → POST /api/terminal/propose.
+        if self._mode == "terminal" and self._terminal_bridge is not None:
+            try:
+                await self._terminal_bridge.handle_voice_input(user_text)
+            except Exception as exc:
+                logger.warning("ui.bridge | terminal handle_voice_input: {}", exc)
             return
 
         # Notifica UI del testo utente + registra nella sessione
