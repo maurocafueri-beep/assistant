@@ -687,6 +687,71 @@ class TestTerminalAgentLifecycle:
 
 
 # ---------------------------------------------------------------------------
+# add_turn_to_history — popolazione esterna della history
+# ---------------------------------------------------------------------------
+
+class TestAddTurnToHistory:
+    async def test_add_turn_appends(self, ta):
+        """add_turn_to_history appende correttamente."""
+        assert len(ta._turn_history) == 0
+        turn = AgentTurn(user_request="test")
+        ta.add_turn_to_history(turn)
+        assert len(ta._turn_history) == 1
+        assert ta._turn_history[0] is turn
+
+    async def test_propose_sees_externally_added_history(self, ta, mock_llm):
+        """
+        Se la history è popolata da fuori (es. dal TerminalBridge), propose()
+        DEVE includere quei turni nei messages passati al modello — altrimenti
+        "correggi il comando precedente" non funziona.
+        """
+        # Aggiungi un turno fittizio alla history dell'agent
+        past_proposal = CommandProposal(
+            command="ls /percorsoinesistente",
+            rationale="lista file",
+            risk_level=RiskLevel.SAFE,
+            needs_confirmation=False,
+            cwd="/home/test",
+            proposal_id="prev-id",
+        )
+        past_result = CommandResult(
+            command="ls /percorsoinesistente",
+            exit_code=2,
+            stdout="",
+            stderr="ls: impossibile accedere",
+            duration_ms=5.0,
+            cwd_before="/home/test",
+            cwd_after="/home/test",
+            proposal_id="prev-id",
+        )
+        ta.add_turn_to_history(AgentTurn(
+            user_request="lista i file in nonesiste",
+            proposal=past_proposal,
+            result=past_result,
+            analysis="il percorso non esiste",
+        ))
+
+        # Stub: il prossimo propose risponde con una correzione
+        mock_llm.chat.return_value = _llm_response(
+            '{"action": "propose", "command": "ls /home/test", '
+            '"rationale": "correzione", "sources": []}'
+        )
+        await ta.propose("correggi il comando precedente usando /home/test")
+
+        # Verifico che la chiamata all'LLM abbia incluso il turno passato
+        # nei messages
+        assert mock_llm.chat.call_args is not None
+        # Il primo arg posizionale è messages (List[Message])
+        sent_messages = mock_llm.chat.call_args.args[0]
+        assert len(sent_messages) >= 3
+
+        # Il messaggio assistant deve contenere il comando passato + stderr
+        assistant_msgs = [m for m in sent_messages if m.role == Role.ASSISTANT]
+        assert any("ls /percorsoinesistente" in m.content for m in assistant_msgs)
+        assert any("stderr" in m.content for m in assistant_msgs)
+
+
+# ---------------------------------------------------------------------------
 # TerminalAgent — propose() (loop ReAct)
 # ---------------------------------------------------------------------------
 

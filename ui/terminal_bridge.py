@@ -391,6 +391,9 @@ class TerminalBridge:
             turn.error = f"execute: {exc}"
             logger.warning("ui.terminal_bridge | execute fallito: {}", exc)
             self._history.append(turn)
+            # Propago anche all'agent così "correggi il comando precedente"
+            # nei turni successivi ha contesto del fallimento.
+            self._agent.add_turn_to_history(turn)
             await self._broadcast({
                 "type":  "terminal.error",
                 "message": turn.error,
@@ -414,6 +417,12 @@ class TerminalBridge:
             logger.warning("ui.terminal_bridge | analyze fallito: {}", exc)
 
         self._history.append(turn)
+        # Propago anche all'agent così "correggi il comando precedente"
+        # nei turni successivi ha contesto su comando/result/analisi precedenti.
+        # IMPORTANTE: senza questo, agent._turn_history resta vuoto e il modello
+        # risponde "non ci sono comandi precedenti" quando l'utente chiede di
+        # correggere/modificare.
+        self._agent.add_turn_to_history(turn)
 
         await self._broadcast({
             "type":     "terminal.result",

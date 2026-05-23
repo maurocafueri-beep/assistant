@@ -783,6 +783,20 @@ class TerminalAgent:
         """Imposta il locale corrente (es. 'it_IT.UTF-8') per il system prompt."""
         self._locale = locale or "C"
 
+    def add_turn_to_history(self, turn: AgentTurn) -> None:
+        """
+        Aggiunge un turno alla history interna dell'agent.
+
+        Quando si usano propose()/execute()/analyze() separatamente (es. dalla UI
+        con conferma asincrona), il chiamante DEVE chiamare questo metodo dopo
+        ogni turno completato. Altrimenti la history resta vuota e il modello
+        non ha contesto per richieste "correggi il comando precedente".
+
+        TerminalAgent.run() lo fa già internamente — questo metodo serve solo
+        per i flussi che bypassano run().
+        """
+        self._turn_history.append(turn)
+
     def reset(self) -> None:
         """Resetta cwd, history dei turni e ultima proposta."""
         self._cwd = str(Path(self._cfg.initial_cwd or os.path.expanduser("~")).resolve())
