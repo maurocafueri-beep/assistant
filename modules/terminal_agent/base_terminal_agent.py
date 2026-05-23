@@ -703,6 +703,10 @@ class TerminalAgent:
         # Se vuoto, il system prompt non include la sezione "PERCORSI UTENTE".
         self._xdg_paths: dict[str, str] = {}
 
+        # Cache dei modelli che NON supportano think:true (popolata runtime al
+        # primo 400 di Ollama). Vedi _chat_with_think_fallback.
+        self._models_without_thinking: set[str] = set()
+
         self._loaded: bool = False
 
     # -----------------------------------------------------------------------
@@ -797,6 +801,77 @@ class TerminalAgent:
         """
         self._turn_history.append(turn)
 
+    async def _chat_with_think_fallback(
+        self,
+        messages: list[Message],
+        *,
+        think: bool,
+        system: Optional[str] = None,
+    ):
+        """
+        Wrapper di self._llm.chat() che gestisce il caso di modelli che NON
+        supportano l'opzione `think`. Strategia:
+
+        1. Se sappiamo già che il modello corrente non supporta think,
+           chiamiamo senza il flag.
+        2. Altrimenti proviamo con think=requested. Se Ollama risponde 400,
+           lo segniamo nella cache e ritentiamo senza think.
+        3. Errori non-400 (timeout, connection, ecc.) li ripropaghiamo.
+
+        Risolve il caso 'gemma3' / 'gemma4' / qualunque modello non-thinking
+        che l'utente seleziona dalla UI dopo che abbiamo rimosso il filtro
+        per family.
+        """
+        # Quale modello stiamo davvero usando?
+        current = self._model_override  # se None, OllamaClient userà il default
+        # Se è già marcato come non-thinking, niente think dall'inizio
+        if current and current in self._models_without_thinking:
+            return await self._llm.chat(
+                messages,
+                role=self._model_role,
+                model=self._model_override,
+                system=system,
+                options={"think": False},
+            )
+
+        # Primo tentativo: con think come richiesto
+        try:
+            return await self._llm.chat(
+                messages,
+                role=self._model_role,
+                model=self._model_override,
+                system=system,
+                options={"think": think},
+            )
+        except Exception as exc:
+            # Solo per il caso "il modello non supporta think" facciamo fallback.
+            # Lo riconosciamo dal codice 400 o dal messaggio "does not support thinking".
+            msg = str(exc).lower()
+            is_400 = (
+                "400" in msg
+                or "bad request" in msg
+                or "does not support thinking" in msg
+                or "thinking is not supported" in msg
+            )
+            if not (think and is_400):
+                raise  # qualunque altro errore va propagato
+
+            logger.info(
+                "terminal_agent | modello '{}' non supporta think:true → "
+                "fallback senza think + cache",
+                current or "(default)",
+            )
+            if current:
+                self._models_without_thinking.add(current)
+            # Ritenta senza il flag think
+            return await self._llm.chat(
+                messages,
+                role=self._model_role,
+                model=self._model_override,
+                system=system,
+                options={"think": False},
+            )
+
     def reset(self) -> None:
         """Resetta cwd, history dei turni e ultima proposta."""
         self._cwd = str(Path(self._cfg.initial_cwd or os.path.expanduser("~")).resolve())
@@ -877,12 +952,10 @@ class TerminalAgent:
         search_used = False
 
         for iteration in range(self._cfg.max_iterations):
-            response = await self._llm.chat(
+            response = await self._chat_with_think_fallback(
                 messages,
-                role=self._model_role,
-                model=self._model_override,
+                think=self._cfg.use_thinking_propose,
                 system=system_prompt,
-                options={"think": self._cfg.use_thinking_propose},
             )
             raw = response.content
             parsed = _extract_json(raw)
@@ -1131,11 +1204,9 @@ class TerminalAgent:
         )
 
         try:
-            response = await self._llm.chat(
+            response = await self._chat_with_think_fallback(
                 [Message(role=Role.USER, content=prompt)],
-                role=self._model_role,
-                model=self._model_override,
-                options={"think": self._cfg.use_thinking_analyze},
+                think=self._cfg.use_thinking_analyze,
             )
             return response.content.strip()
         except Exception as exc:

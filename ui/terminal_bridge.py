@@ -227,9 +227,15 @@ class TerminalBridge:
 
     async def list_available_models(self) -> list[dict[str, Any]]:
         """
-        Ritorna tutti i modelli installati su Ollama che appartengono a
-        un thinking-family. Ogni elemento contiene:
+        Ritorna TUTTI i modelli installati su Ollama. Ogni elemento contiene:
             {name, family, parameter_size, hidden: bool, current: bool}
+
+        Nota: prima filtravamo per `family ∈ thinking_families` come difesa
+        contro modelli non-thinking che crashavano con 400 sul flag think:true.
+        Ora il filtro è rimosso per dare massima libertà all'utente. Conseguenza:
+        selezionare un modello non-thinking può generare errore 400 alla prima
+        chiamata. L'utente decide.
+
         Non solleva: se Ollama non risponde, ritorna [].
         """
         try:
@@ -250,8 +256,6 @@ class TerminalBridge:
             family  = details.get("family", "")
             psize   = details.get("parameter_size", "")
             if not name:
-                continue
-            if not self.is_thinking_family(family):
                 continue
             out.append({
                 "name":           name,
