@@ -177,7 +177,13 @@ class TestModelFilter:
         ctx.__aexit__  = AsyncMock(return_value=None)
         return patch("httpx.AsyncClient", return_value=ctx)
 
-    async def test_list_available_models_filters_by_family(self, bridge):
+    async def test_list_available_models_shows_all(self, bridge):
+        """
+        Il filtro per family è stato rimosso (commit 853d909): ora mostriamo
+        TUTTI i modelli installati su Ollama. La protezione contro modelli
+        non-thinking è demandata al fallback automatico in TerminalAgent
+        (_chat_with_think_fallback).
+        """
         fake_tags = {
             "models": [
                 {"name": "qwen3.5:9b", "details": {"family": "qwen35", "parameter_size": "9.7B"}},
@@ -190,10 +196,12 @@ class TestModelFilter:
             out = await bridge.list_available_models()
 
         names = [m["name"] for m in out]
+        # Ora tutti i modelli installati appaiono, indipendentemente dalla family
         assert "qwen3.5:9b" in names
         assert "qwen3:14b"  in names
-        assert "gemma3:12b" not in names
-        assert "llama3:8b"  not in names
+        assert "gemma3:12b" in names
+        assert "llama3:8b"  in names
+        assert len(names) == 4
 
     async def test_hidden_models_marked(self, bridge):
         fake_tags = {

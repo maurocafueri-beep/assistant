@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from modules.llm.base_llm import LLMResponse
+from modules.llm.base_llm import LLMResponse, Message, Role
 from core.context import ModelRole
 from modules.terminal_agent import (
     AgentTurn,
