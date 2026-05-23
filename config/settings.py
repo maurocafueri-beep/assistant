@@ -74,7 +74,15 @@ class PCControlSettings(BaseSettings):
 
 class TerminalAgentSettings(BaseSettings):
     """Configurazione del terminale agentico (modules/terminal_agent)."""
-    model_config = SettingsConfigDict(env_prefix="TERMINAL_AGENT_")
+    # NOTA: env_file esplicito perché pydantic-settings 2.x non eredita
+    # questa config dalle BaseSettings annidate via default_factory.
+    # Senza, TERMINAL_AGENT_* nel .env verrebbero ignorate.
+    model_config = SettingsConfigDict(
+        env_prefix="TERMINAL_AGENT_",
+        env_file=PROJECT_ROOT / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     # Modello LLM: "chat" -> qwen3.5:9b-q8_0, "code" -> qwen3.6:35b-a3b
     model_role: Literal["chat", "code"] = "chat"
