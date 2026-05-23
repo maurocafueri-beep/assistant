@@ -844,33 +844,58 @@ class TerminalAgent:
                 options={"think": think},
             )
         except Exception as exc:
-            # Solo per il caso "il modello non supporta think" facciamo fallback.
-            # Lo riconosciamo dal codice 400 o dal messaggio "does not support thinking".
+            # Tentiamo il fallback senza think se l'errore SEMBRA legato al
+            # mancato supporto di think. Cause possibili:
+            #   - 400 Bad Request (alcuni modelli)
+            #   - 500 Internal Server Error con body '"... does not support thinking"'
+            #     (es. gemma3 su Ollama 0.23.x: status 500 + JSON error)
+            # Su 500 generici (es. OOM, runner crash) il retry senza think
+            # quasi certamente fallirà uguale, ma è safe ritentare comunque:
+            # se è davvero OOM, il secondo tentativo ridarà lo stesso errore
+            # e lo propaghiamo all'utente.
             msg = str(exc).lower()
-            is_400 = (
+            looks_like_think_issue = (
                 "400" in msg
+                or "500" in msg
                 or "bad request" in msg
+                or "internal server error" in msg
                 or "does not support thinking" in msg
                 or "thinking is not supported" in msg
             )
-            if not (think and is_400):
-                raise  # qualunque altro errore va propagato
+            if not (think and looks_like_think_issue):
+                raise  # qualunque altro errore (timeout, network, ecc.) va propagato
 
             logger.info(
-                "terminal_agent | modello '{}' non supporta think:true → "
-                "fallback senza think + cache",
-                current or "(default)",
+                "terminal_agent | chat fallita con think=true ({}), "
+                "ritento senza think | modello={}",
+                type(exc).__name__, current or "(default)",
             )
+            # Ritenta senza il flag think
+            try:
+                result = await self._llm.chat(
+                    messages,
+                    role=self._model_role,
+                    model=self._model_override,
+                    system=system,
+                    options={"think": False},
+                )
+            except Exception as exc2:
+                # Anche il retry è fallito: il problema NON era think.
+                # Propagiamo l'errore originale (più informativo).
+                logger.warning(
+                    "terminal_agent | anche il retry senza think è fallito: {} "
+                    "— propago l'errore originale", exc2,
+                )
+                raise exc
+            # Retry riuscito: cache il modello come non-thinking per evitare
+            # di rifare il primo tentativo inutilmente in futuro.
             if current:
                 self._models_without_thinking.add(current)
-            # Ritenta senza il flag think
-            return await self._llm.chat(
-                messages,
-                role=self._model_role,
-                model=self._model_override,
-                system=system,
-                options={"think": False},
-            )
+                logger.info(
+                    "terminal_agent | '{}' marcato come non-thinking",
+                    current,
+                )
+            return result
 
     def reset(self) -> None:
         """Resetta cwd, history dei turni e ultima proposta."""
