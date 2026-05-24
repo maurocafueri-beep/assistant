@@ -56,9 +56,8 @@ class UIBridge(VoiceLoop):
         self._ws = ws_manager
         self._ptt_key_str = ptt_key
         self._ptt_key_obj = _resolve_key(ptt_key)
-        self._last_stt_ms: float = 0.0   # transcription time (from _run_ptt)
-        self._last_llm_ms: float = 0.0   # TTFT: stream_start → first chunk
-        self._last_tts_ms: float = 0.0   # TTS: first synthesize() → first audio play
+        # Le latenze (_last_stt_ms / _last_llm_ms / _last_tts_ms) sono
+        # definite e popolate da VoiceLoop; qui le leggiamo soltanto.
 
         # ── Multi-sessione ──────────────────────────────────────────────
         # Registry: session_id → {name, created, last_active, messages:[{role,text,ts}]}
@@ -72,6 +71,11 @@ class UIBridge(VoiceLoop):
         # Le primitive STT/TTS restano caricate (PTT continua a funzionare).
         self._mode: str = "chat"
         self._terminal_bridge = None   # set da app.py: TerminalBridge instance
+
+        # Task fire-and-forget di _emit: vanno tenuti referenziati finché
+        # non completano, altrimenti l'event loop ne tiene solo una weak
+        # reference e possono essere garbage-collected a metà broadcast.
+        self._bg_tasks: set = set()
 
     def set_terminal_bridge(self, bridge) -> None:
         """app.py registra qui il TerminalBridge per la modalità terminale."""
@@ -184,6 +188,41 @@ class UIBridge(VoiceLoop):
         self._emit({"type": "sessions", "sessions": self.list_sessions()})
         return True
 
+    def restore_histories_from_sessions(self) -> int:
+        """
+        Ricostruisce la finestra conversazionale dell'orchestratore
+        (_session_histories) a partire dai messaggi salvati su disco.
+
+        Senza questo, dopo un riavvio la UI mostra la chat completa ma
+        l'LLM non ha memoria verbatim dei turni precedenti: il primo
+        messaggio ripartirebbe con cronologia vuota.
+
+        Va chiamato DOPO load() (orchestratore pronto). Ritorna il numero
+        di sessioni ripristinate. Errori non fatali.
+        """
+        from core.orchestrator import _trim_history
+        restored = 0
+        try:
+            window = self._orch._context_window
+        except Exception:
+            window = 20
+        for sid, s in self._sessions.items():
+            msgs = s.get("messages") or []
+            history: list[dict[str, str]] = []
+            for m in msgs:
+                role = "assistant" if m.get("role") == "asst" else m.get("role", "user")
+                content = m.get("text", "")
+                if content:
+                    history.append({"role": role, "content": content})
+            if history:
+                try:
+                    self._orch._session_histories[sid] = _trim_history(history, window)
+                    restored += 1
+                except Exception as exc:
+                    logger.warning("ui.bridge | restore history {}: {}", sid, exc)
+        logger.info("ui.bridge | history orchestratore ripristinata per {} sessioni", restored)
+        return restored
+
     def _record_message(self, role: str, text: str) -> None:
         import time as _t
         s = self._sessions.get(self._session_id)
@@ -223,13 +262,18 @@ class UIBridge(VoiceLoop):
 
     @property
     def active_model(self) -> str:
-        from config.settings import settings
-        return settings.ollama.chat_model
+        from core.context import ModelRole
+        try:
+            return self._orch.active_model(ModelRole.CHAT)
+        except Exception:
+            from config.settings import settings
+            return settings.ollama.chat_model
 
     def switch_model(self, name: str) -> bool:
         try:
-            from config.settings import settings
-            settings.ollama.chat_model = name
+            from core.context import ModelRole
+            # Stato isolato sull'orchestratore: non muta settings.ollama.*
+            self._orch.set_model(name, ModelRole.CHAT)
             self._emit({"type":"model","name":name})
             logger.info("ui.bridge | modello → '{}'", name)
             return True
@@ -336,10 +380,46 @@ class UIBridge(VoiceLoop):
     @property
     def ptt_key(self): return self._ptt_key_str
 
+    async def broadcast_init(self) -> None:
+        """
+        Invia a TUTTI i client WS connessi il payload 'init' completo.
+
+        Serve a chiudere la race d'avvio: la webview può connettersi
+        mentre il loop non è ancora pronto (state['loop'] None nel server),
+        ricevendo uno stato vuoto. Una volta caricati orchestratore/TTS e
+        ripristinate le impostazioni, ribroadcastiamo init così i client
+        già connessi si popolano senza dover riconnettere. Il client
+        gestisce 'init' in modo idempotente.
+        """
+        try:
+            payload = {
+                "type": "init",
+                "state": self.state,
+                "ptt_key": self.ptt_key,
+                "session": self.session_id,
+                "sessions": self.list_sessions(),
+                "active_messages": self._sessions.get(self.session_id, {}).get("messages", []),
+                "personality": self.active_personality,
+                "personalities": self.list_personalities(),
+                "model": self.active_model,
+                "voice": await self.active_voice_from_server(),
+                "voices": await self.list_voices(),
+                "tts_enabled": self.tts_enabled,
+                "stats": self.stats.to_log_dict(),
+            }
+            await self._ws.broadcast(payload)
+            logger.debug("ui.bridge | init ribroadcastato a {} client", self._ws.n_clients)
+        except Exception as exc:
+            logger.warning("ui.bridge | broadcast_init: {}", exc)
+
     # ── WS overrides ─────────────────────────────────────────────────
     def _emit(self, payload: dict) -> None:
-        try: asyncio.get_running_loop().create_task(self._ws.broadcast(payload))
-        except RuntimeError: pass
+        try:
+            t = asyncio.get_running_loop().create_task(self._ws.broadcast(payload))
+        except RuntimeError:
+            return
+        self._bg_tasks.add(t)
+        t.add_done_callback(self._bg_tasks.discard)
 
     def _set_state(self, state: str) -> None:
         super()._set_state(state)
@@ -431,53 +511,10 @@ class UIBridge(VoiceLoop):
                 },
             })
 
-    async def _stream_and_speak(self, ctx: Any) -> None:
-        # ── LLM TTFT: time from request start to first chunk ─────────
-        stream_start     = time.monotonic()
-        first_chunk_time = None
-        orig_turn        = self._orch.turn
-
-        async def _patched_turn(c):
-            nonlocal first_chunk_time
-            async for chunk in orig_turn(c):
-                if first_chunk_time is None:
-                    first_chunk_time = time.monotonic()
-                self._emit({"type": "chunk", "text": chunk})
-                yield chunk
-        self._orch.turn = _patched_turn
-
-        # ── TTS: time from first synthesize() call to audio playback ─
-        first_synth_time = None
-        orig_synth       = None
-        if self._tts:
-            orig_synth = self._tts.synthesize
-            async def _timed_synth(text: str):
-                nonlocal first_synth_time
-                if first_synth_time is None:
-                    first_synth_time = time.monotonic()
-                return await orig_synth(text)
-            self._tts.synthesize = _timed_synth
-
-        try:
-            await super()._stream_and_speak(ctx)
-        finally:
-            self._orch.turn = orig_turn
-            if orig_synth is not None:
-                self._tts.synthesize = orig_synth
-
-            # TTFT
-            if first_chunk_time is not None:
-                self._last_llm_ms = round((first_chunk_time - stream_start) * 1000, 1)
-
-            # TTS first-audio: first_synth_time → _tts_speaking_start
-            # _tts_speaking_start is set by the player task when audio begins playing;
-            # it's still valid here because _process_turn resets it after we return.
-            if first_synth_time and self._tts_speaking_start > 0:
-                self._last_tts_ms = round(
-                    (self._tts_speaking_start - first_synth_time) * 1000, 1
-                )
-            else:
-                self._last_tts_ms = 0.0
+    def _on_llm_chunk(self, chunk: str) -> None:
+        # Hook del loop base: inoltra ogni chunk LLM alla UI via WebSocket.
+        # Niente monkey-patching: le latenze sono misurate dal base loop.
+        self._emit({"type": "chunk", "text": chunk})
 
     async def _run_ptt(self) -> None:
         import numpy as np, sounddevice as sd

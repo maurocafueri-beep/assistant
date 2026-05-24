@@ -2,10 +2,11 @@
 modules/llm/base.py
 OllamaClient — unico punto di accesso a tutti i modelli Ollama del progetto.
 
-Modelli gestiti (configurati in config/settings.py → OllamaSettings):
-    CHAT   → settings.ollama.chat_model   (qwen3.5:9b-q8_0)
-    CODE   → settings.ollama.code_model   (qwen3.6:35b-a3b)
-    VISION → settings.ollama.vision_model (qwen3-vl:8b)
+Modelli gestiti (configurati in config/settings.py → OllamaSettings,
+nomi esatti definiti lì o sovrascritti via .env):
+    CHAT   → settings.ollama.chat_model
+    CODE   → settings.ollama.code_model
+    VISION → settings.ollama.vision_model
     embed  → settings.ollama.embed_model  (nomic-embed-text)
 
 API pubblica:

@@ -215,6 +215,12 @@ class VoiceLoop:
         self._echo_block_until:   float          = 0.0
         self._tts_last_play_end:  float          = 0.0
         self._tts_speaking_start: float          = 0.0
+
+        # Latenze ultimo turno (popolate da _stream_and_speak / _run_ptt).
+        # Misurate qui nel loop base, senza patchare i metodi a runtime.
+        self._last_stt_ms:        float          = 0.0   # trascrizione (da _run_ptt)
+        self._last_llm_ms:        float          = 0.0   # TTFT: start → primo chunk
+        self._last_tts_ms:        float          = 0.0   # primo synth → primo audio
         self._stop_event:         asyncio.Event  = asyncio.Event()
         self._turn_queue:         asyncio.Queue  = asyncio.Queue(maxsize=1)
         self._stats:              VoiceLoopStats = VoiceLoopStats()
@@ -514,6 +520,14 @@ class VoiceLoop:
         self._set_state(LoopState.THINKING)
         audio_queue: asyncio.Queue = asyncio.Queue(maxsize=2)
 
+        # Strumentazione latenze (senza patchare metodi condivisi):
+        #   _last_llm_ms = stream_start → primo chunk LLM
+        #   _last_tts_ms = primo synth() → inizio riproduzione audio
+        stream_start             = time.monotonic()
+        first_synth_time: float  = 0.0
+        self._last_llm_ms        = 0.0
+        self._last_tts_ms        = 0.0
+
         async def _player() -> None:
             while True:
                 audio = await audio_queue.get()
@@ -531,11 +545,14 @@ class VoiceLoop:
         player_task = asyncio.create_task(_player())
 
         async def _synth(text: str) -> None:
+            nonlocal first_synth_time
             if not self._tts or not self._tts_enabled:
                 return
             clean = _strip_markdown(text)
             if not clean:
                 return
+            if first_synth_time == 0.0:
+                first_synth_time = time.monotonic()
             try:
                 result = await self._tts.synthesize(clean)
                 await audio_queue.put(result.audio_bytes)
@@ -557,8 +574,10 @@ class VoiceLoop:
                 buf       += chunk
                 if first_chunk:
                     first_chunk = False
+                    self._last_llm_ms = round((time.monotonic() - stream_start) * 1000, 1)
                     self._set_state(LoopState.SPEAKING)
                 print(chunk, end="", flush=True)
+                self._on_llm_chunk(chunk)
                 sentences, buf = _extract_sentences(buf)
                 # Frasi troppo corte: fondile con la successiva
                 # (es. "Tu invece?" → prepend alla frase che segue)
@@ -593,6 +612,11 @@ class VoiceLoop:
             except Exception:
                 pass
             await player_task
+            # TTS first-audio: primo synth() → inizio riproduzione.
+            if first_synth_time > 0.0 and self._tts_speaking_start > 0.0:
+                self._last_tts_ms = round(
+                    (self._tts_speaking_start - first_synth_time) * 1000, 1
+                )
             # Drain hardware: senza questo sleep l ultima sillaba viene troncata
             # perche il driver audio non ha ancora svuotato il suo buffer interno.
             await asyncio.sleep(_AUDIO_DRAIN_S)
@@ -600,6 +624,15 @@ class VoiceLoop:
         ctx.assistant_text = full_text
 
     # UI
+
+    def _on_llm_chunk(self, chunk: str) -> None:
+        """
+        Hook chiamato per ogni chunk di testo prodotto dall'LLM durante lo
+        streaming. Default: no-op (la console stampa già il chunk).
+        Le sottoclassi (es. UIBridge) lo sovrascrivono per inoltrarlo
+        altrove, senza dover patchare i metodi dell'orchestratore.
+        """
+        pass
 
     def _set_state(self, state: str) -> None:
         if state != self._state:

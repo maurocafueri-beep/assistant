@@ -18,8 +18,11 @@ os.environ.setdefault("TORCH_HOME", str(PROJECT_ROOT / "data" / "torch-cache"))
 class OllamaSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OLLAMA_")
     base_url: str = "http://localhost:11434"
-    chat_model: str = "qwen3.5:9b-q8_0"
-    code_model: str = "qwen3.6:35b-a3b"
+    # Default = tag Ollama realmente installati. Override via .env
+    # (OLLAMA_CHAT_MODEL, OLLAMA_CODE_MODEL, ...). Devono esistere su
+    # `ollama list`, altrimenti ogni turno LLM fallisce.
+    chat_model: str = "qwen3:14b-q8_0"
+    code_model: str = "qwen3:30b-a3b-q4_K_M"
     vision_model: str = "qwen3-vl:8b"
     embed_model: str = "nomic-embed-text"
     timeout: int = 120
@@ -50,7 +53,8 @@ class SpeakerSettings(BaseSettings):
 
 class MemorySettings(BaseSettings):
     chroma_persist_dir: Path = PROJECT_ROOT / "data" / "embeddings"
-    embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    # NB: l'embedding è generato da Ollama (settings.ollama.embed_model,
+    # nomic-embed-text). Non esiste un embedding sentence-transformers locale.
     rag_top_k: int = 5
     context_window_messages: int = 20
 
@@ -84,7 +88,8 @@ class TerminalAgentSettings(BaseSettings):
         extra="ignore",
     )
 
-    # Modello LLM: "chat" -> qwen3.5:9b-q8_0, "code" -> qwen3.6:35b-a3b
+    # Modello LLM: "chat" -> settings.ollama.chat_model,
+    #              "code" -> settings.ollama.code_model
     model_role: Literal["chat", "code"] = "chat"
     use_thinking_propose: bool = True
     use_thinking_analyze: bool = False

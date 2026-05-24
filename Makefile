@@ -10,14 +10,14 @@ help:
 	@echo ""
 	@echo "  Assistente AI Locale"
 	@echo "  ──────────────────────────────────────────"
-	@echo "  make start          Avvia l'assistente"
-	@echo "  make start-api      Solo API server (dev)"
+	@echo "  make start          Avvia l'app nativa (Qt)"
+	@echo "  make start-ui       Solo UI web + server (dev, no finestra)"
+	@echo "  make start-voice    Loop vocale CLI (no UI)"
 	@echo "  make stop           Ferma tutto"
 	@echo "  make check          Verifica sistema"
 	@echo "  make status         Stato servizi"
 	@echo "  make logs           Log in tempo reale"
 	@echo "  make pull-models    Scarica modelli Ollama"
-	@echo "  make enroll         Registra speaker"
 	@echo "  make train          Avvia fine-tuning"
 	@echo "  make test           Esegui test"
 	@echo "  make clean          Rimuovi cache"
@@ -25,15 +25,21 @@ help:
 
 .PHONY: start
 start:
-	source $(RUNTIME_VENV)/bin/activate && $(PYTHON) -m api.main
+	$(PYTHON) scripts/run_app.py
 
-.PHONY: start-api
-start-api:
-	$(PYTHON) -m uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
+.PHONY: start-ui
+start-ui:
+	$(PYTHON) scripts/run_ui.py
+
+.PHONY: start-voice
+start-voice:
+	$(PYTHON) scripts/run_voice.py
 
 .PHONY: stop
 stop:
-	@pkill -f "api.main" 2>/dev/null || true
+	@pkill -f "scripts/run_app.py" 2>/dev/null || true
+	@pkill -f "scripts/run_ui.py" 2>/dev/null || true
+	@pkill -f "scripts/run_voice.py" 2>/dev/null || true
 	@cd docker && docker compose stop
 
 .PHONY: check
@@ -55,10 +61,6 @@ pull-models:
 	ollama pull qwen3:30b-a3b-q4_K_M
 	ollama pull qwen3-vl:8b
 	ollama pull nomic-embed-text
-
-.PHONY: enroll
-enroll:
-	$(PYTHON) scripts/enroll_speaker.py
 
 .PHONY: train
 train:

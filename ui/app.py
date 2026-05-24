@@ -245,6 +245,19 @@ class _AsyncWorker(QObject):
                     # ui_loop.load() è stato eseguito da __aenter__:
                     # ora _orch e _tts sono pronti → ripristino sicuro.
                     await _restore_ui_settings()
+                    # Ricostruisce la finestra conversazionale dell'LLM dai
+                    # messaggi salvati, così dopo un riavvio l'assistente
+                    # "ricorda" i turni precedenti (non solo la UI).
+                    try:
+                        ui_loop.restore_histories_from_sessions()
+                    except Exception as exc:
+                        logger.warning("ui.app | restore histories: {}", exc)
+                    # Chiude la race d'avvio: i client connessi prima che il
+                    # loop fosse pronto ricevono ora l'init completo.
+                    try:
+                        await ui_loop.broadcast_init()
+                    except Exception as exc:
+                        logger.warning("ui.app | broadcast_init: {}", exc)
                     await asyncio.gather(ui_loop.run(), server_task)
             finally:
                 # Chiudi il TerminalBridge se è stato caricato (idempotente)

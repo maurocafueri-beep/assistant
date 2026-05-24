@@ -297,6 +297,11 @@ class Orchestrator:
         # (permette sessioni parallele isolate)
         self._session_histories: dict[str, list[dict[str, str]]] = defaultdict(list)
 
+        # Override del modello per ruolo, impostati a runtime (es. dalla UI).
+        # Evita di mutare il singleton globale settings.ollama.*: lo stato
+        # del modello attivo vive qui, isolato per istanza di orchestratore.
+        self._model_overrides: dict[ModelRole, str] = {}
+
     # -----------------------------------------------------------------------
     # Context manager
     # -----------------------------------------------------------------------
@@ -476,7 +481,9 @@ class Orchestrator:
         full_text = ""
         try:
             t0 = time.monotonic()
-            async for chunk in self._llm.stream(messages, ctx.model_role):
+            model_name = self.active_model(ctx.model_role)
+            ctx.model_name = model_name
+            async for chunk in self._llm.stream(messages, ctx.model_role, model=model_name):
                 full_text += chunk
                 yield chunk
             ctx.set_timing("llm", (time.monotonic() - t0) * 1000)
@@ -551,6 +558,26 @@ class Orchestrator:
         self._require_loaded()
         self._personality.switch(name)
         logger.info("orchestrator | personalità → '{}'", name)
+
+    def _default_model(self, role: ModelRole) -> str:
+        """Modello da settings per il ruolo dato (nessun override applicato)."""
+        return {
+            ModelRole.CHAT:   settings.ollama.chat_model,
+            ModelRole.CODE:   settings.ollama.code_model,
+            ModelRole.VISION: settings.ollama.vision_model,
+        }[role]
+
+    def active_model(self, role: ModelRole = ModelRole.CHAT) -> str:
+        """Modello attualmente attivo per il ruolo (override runtime o default)."""
+        return self._model_overrides.get(role) or self._default_model(role)
+
+    def set_model(self, name: str, role: ModelRole = ModelRole.CHAT) -> None:
+        """
+        Imposta il modello per i turni successivi del ruolo dato, senza
+        mutare il singleton globale settings.ollama.* (che resta il default).
+        """
+        self._model_overrides[role] = name
+        logger.info("orchestrator | modello[{}] → '{}'", role.value, name)
 
     def clear_session(self, session_id: str) -> None:
         """Azzera la cronologia di una sessione."""

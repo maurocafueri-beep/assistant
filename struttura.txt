@@ -1,14 +1,10 @@
 # Struttura del progetto local-assistant
-# Aggiornata il 2026-05-20
+# Aggiornata il 2026-05-24
 # Esclusi: venv-*, vendor/ (repo git a sé), __pycache__, cache HF/torch, .git
 #
 # Legenda: '/' = directory, '*' = eseguibile
 
 ./
-├── api/
-│   ├── routes/
-│   │   └── __init__.py
-│   └── __init__.py
 ├── config/
 │   ├── personalities/
 │   │   ├── default.yaml
@@ -89,6 +85,9 @@
 │   ├── stt/
 │   │   ├── base_stt.py
 │   │   └── __init__.py
+│   ├── terminal_agent/
+│   │   ├── base_terminal_agent.py
+│   │   └── __init__.py
 │   ├── tts/
 │   │   ├── base_tts.py
 │   │   ├── __init__.py
@@ -105,6 +104,7 @@
 │   │   ├── smoke_orchestrator.py
 │   │   ├── smoke_personality.py
 │   │   ├── smoke_stt.py
+│   │   ├── smoke_terminal_agent.py
 │   │   ├── smoke_tts.py
 │   │   └── smoke_web_search.py
 │   ├── check_health.py*
@@ -123,6 +123,8 @@
 │   ├── test_personality.py
 │   ├── test_speaker_id.py
 │   ├── test_stt.py
+│   ├── test_terminal_agent.py
+│   ├── test_terminal_bridge.py
 │   ├── test_tts.py
 │   └── test_web_search.py
 ├── tools/
@@ -134,11 +136,13 @@
 │   ├── assets/
 │   │   └── icon.png
 │   ├── static/
-│   │   └── index.html
+│   │   ├── chat.html
+│   │   └── terminal.html
 │   ├── app.py
 │   ├── bridge.py
 │   ├── __init__.py
-│   └── server.py
+│   ├── server.py
+│   └── terminal_bridge.py
 ├── .env
 ├── .env.example
 ├── .gitignore
@@ -150,4 +154,4 @@
 ├── struttura.txt
 └── tts_studio.sh*
 
-46 directories, 99 files
+45 directories, 104 files
