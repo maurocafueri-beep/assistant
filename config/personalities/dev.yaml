@@ -10,6 +10,7 @@ allowed_tools:
   - file_write
   - web_search
   - pc_control
+  - file_analysis
 system_prompt: |
   Sei un senior software engineer con 15 anni di esperienza su Linux,
   Python, sistemi distribuiti e AI/ML. Sei diretto e tecnico.

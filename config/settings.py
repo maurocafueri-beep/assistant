@@ -131,6 +131,55 @@ class TerminalAgentSettings(BaseSettings):
             return [d.strip() for d in v.split(",") if d.strip()]
         return v
 
+class FileAnalysisSettings(BaseSettings):
+    """
+    Configurazione del modulo file_analysis (analisi di file locali iniettati
+    nel system prompt dell'LLM).
+
+    NOTA: env_file esplicito perché pydantic-settings 2.x non eredita
+    questa config dalle BaseSettings annidate via default_factory. Stesso
+    pattern di TerminalAgentSettings.
+    """
+    model_config = SettingsConfigDict(
+        env_prefix="FILE_ANALYSIS_",
+        env_file=PROJECT_ROOT / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # Soglia hard-cut per il testo iniettato nel system prompt (per singolo
+    # file). Caratteri, non token: 8000 char ≈ 2000 token per la maggior
+    # parte dei modelli, abbondante anche con history e RAG accanto.
+    max_chars_per_file: int = Field(8_000, ge=500, le=200_000)
+
+    # Numero massimo di file analizzati nello stesso turno. Oltre, vengono
+    # menzionati ma non analizzati. Cap necessario per non gonfiare il
+    # contesto se l'utente incolla 10 path.
+    max_files_per_turn: int = Field(3, ge=1, le=10)
+
+    # Tetto globale sui caratteri iniettati dai file_analysis nel turno.
+    # Quando N file insieme superano questa soglia, si divide il budget in
+    # parti uguali (fair share) e si tronca ogni file di conseguenza.
+    max_total_chars: int = Field(12_000, ge=1_000, le=500_000)
+
+    # Limite di sicurezza sulla dimensione del file su disco. Evita di
+    # tentare l'estrazione di file enormi (PDF da centinaia di MB, etc.).
+    max_file_bytes: int = Field(50 * 1024 * 1024, ge=1024)
+
+    # Sicurezza: None = eredita da pc_control.safe_dirs (path consentiti).
+    # Override esplicito via env: FILE_ANALYSIS_SAFE_DIRS="/home,/tmp"
+    safe_dirs: list[str] | None = None
+
+    @field_validator("safe_dirs", mode="before")
+    @classmethod
+    def parse_dirs(cls, v):
+        if v is None or v == "":
+            return None
+        if isinstance(v, str):
+            return [d.strip() for d in v.split(",") if d.strip()]
+        return v
+
+
 class PersonalitySettings(BaseSettings):
     default_personality: str = Field("default", alias="DEFAULT_PERSONALITY")
     config_dir: Path = PROJECT_ROOT / "config" / "personalities"
@@ -160,6 +209,7 @@ class Settings(BaseSettings):
     web_search: WebSearchSettings = Field(default_factory=WebSearchSettings)
     pc_control: PCControlSettings = Field(default_factory=PCControlSettings)
     terminal_agent: TerminalAgentSettings = Field(default_factory=TerminalAgentSettings)
+    file_analysis: FileAnalysisSettings = Field(default_factory=FileAnalysisSettings)
     personality: PersonalitySettings = Field(default_factory=PersonalitySettings)
     api: APISettings = Field(default_factory=APISettings)
 

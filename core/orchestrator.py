@@ -7,8 +7,9 @@ Coordina ogni turno:
         → STT (se InputMode.VOICE)
         → MemoryManager.populate_context()
         → PersonalityManager.apply_to_context()
+        → File analysis (se path rilevato + tool consentito)
         → Web search (se trigger keyword + tool consentito)
-        → costruzione messages (system + memory + web + history + user)
+        → costruzione messages (system + memory + file + web + history + user)
         → OllamaClient.stream() o .chat()
         → salvataggio memoria (turno utente + risposta)
         → TTS (se OutputMode.VOICE|BOTH)
@@ -24,11 +25,12 @@ API pubblica:
         result = await orch.add_memory(text, {})  # aggiungi memoria manuale
 
 Errori non fatali:
-    - TTS down       → continua in testo  (ctx.error rimane None)
-    - memoria down   → continua senza RAG (ctx.error rimane None)
-    - web search down→ continua senza ricerca (ctx.error rimane None)
-    - STT fallisce   → ctx.error settato, turn si interrompe
-    - LLM fallisce   → ctx.error settato, turn si interrompe
+    - TTS down        → continua in testo  (ctx.error rimane None)
+    - memoria down    → continua senza RAG (ctx.error rimane None)
+    - web search down → continua senza ricerca (ctx.error rimane None)
+    - file_analysis   → file falliti vengono saltati, gli altri proseguono
+    - STT fallisce    → ctx.error settato, turn si interrompe
+    - LLM fallisce    → ctx.error settato, turn si interrompe
 """
 
 from __future__ import annotations
@@ -56,6 +58,7 @@ from modules.memory import MemoryManager
 from modules.memory.base_memory import SaveResult
 from modules.personality import PersonalityManager
 from modules.web_search import SearXNGClient
+from modules.file_analysis import AnalysisResult, FileAnalyzer
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +74,7 @@ class OrchestratorStatus:
     stt_ok:         bool = False
     tts_ok:         bool = False
     web_search_ok:  bool = False
+    file_analysis_ok: bool = False
     active_sessions: int = 0
 
     def to_log_dict(self) -> dict[str, Any]:
@@ -81,6 +85,7 @@ class OrchestratorStatus:
             "stt":          self.stt_ok,
             "tts":          self.tts_ok,
             "web_search":   self.web_search_ok,
+            "file_analysis": self.file_analysis_ok,
             "sessions":     self.active_sessions,
         }
 
@@ -128,6 +133,102 @@ _WEBSEARCH_TRIGGERS: tuple[str, ...] = (
     "search online",
     "search the web",
 )
+
+
+# Nome del tool file_analysis (deve coincidere con allowed_tools nei profili)
+_FILE_ANALYSIS_TOOL = "file_analysis"
+
+# Prefisso iniettato nel system prompt per i file analizzati
+_FILE_ANALYSIS_HEADER = (
+    "\n\n---\nCONTENUTO FILE ANALIZZATI (usa queste informazioni per "
+    "rispondere; cita il path del file quando ti riferisci ai contenuti):\n"
+)
+_FILE_ANALYSIS_FOOTER = "\n---\n"
+
+# Regex per riconoscere path file con estensione supportata nel testo utente.
+# Cattura: path assoluti (/...), home-relativi (~/...) e path relativi
+# espliciti (./..., ../...). I path nudi senza directory ("foo.pdf") NON
+# vengono catturati: troppo ambigui, sarebbero falsi positivi (es. titoli
+# di articoli). Le 19 estensioni gestite sono identiche a quelle del
+# FileAnalyzer per non avere riconoscimenti orfani.
+import re as _re_file_analysis  # alias locale per non collidere altrove
+
+_FILE_PATH_RE = _re_file_analysis.compile(
+    r"""
+    (?<![\w./~])                # non preceduto da char di path (evita match parziali)
+    (?P<path>
+        (?:~|\.{1,2})?           # opzionale: ~, ., ..
+        (?:/[\w\-.+@]+)+         # almeno un segmento di percorso (NO spazi)
+        \.
+        (?:pdf|docx|txt|md|log|rst|yaml|yml|html|htm|
+           json|csv|tsv|xml|wav|mp3|ogg|flac|m4a|opus)
+    )
+    """,
+    flags=_re_file_analysis.IGNORECASE | _re_file_analysis.VERBOSE,
+)
+
+
+def _extract_file_paths(text: str, max_paths: int = 3) -> list[str]:
+    """
+    Estrae i path con estensione supportata dal testo utente.
+
+    Tollerante ai delimitatori: rimuove virgolette/apici/backtick e
+    punteggiatura finale (`.`, `,`, `;`, `?`, `)`). I path duplicati
+    vengono compattati mantenendo l'ordine di prima occorrenza.
+
+    Args:
+        text:      testo utente
+        max_paths: numero massimo di path restituiti (cap di sicurezza)
+
+    Returns:
+        Lista di stringhe path (non-resolved). Il FileAnalyzer si occupa
+        di espandere ~ e validare l'esistenza.
+    """
+    if not text:
+        return []
+
+    found: list[str] = []
+    seen:  set[str]  = set()
+
+    for match in _FILE_PATH_RE.finditer(text):
+        raw = match.group("path")
+        # Cleanup bordi:
+        # - lstrip SOLO caratteri di apertura (quote/backtick/parentesi) per
+        #   NON rimuovere il '.' iniziale di './' o '../' che fanno parte
+        #   del path.
+        # - rstrip caratteri di chiusura + punteggiatura tipica di fine
+        #   frase ('.', ',', ';', ':', '?', '!').
+        cleaned = raw.lstrip("\"'`<({[").rstrip("\"'`>)}],.;:?!")
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        found.append(cleaned)
+        if len(found) >= max_paths:
+            break
+
+    return found
+
+
+def _format_file_analysis_block(results: list[AnalysisResult]) -> str:
+    """
+    Formatta i risultati di FileAnalyzer in un blocco testuale da iniettare
+    nel system prompt. Gemello di _format_search_block ma per i file.
+    Salta i risultati con contenuto vuoto, mostra path + contenuto.
+    """
+    usable = [r for r in results if r.error is None and r.content.strip()]
+    if not usable:
+        return ""
+    lines = [_FILE_ANALYSIS_HEADER]
+    for i, r in enumerate(usable, 1):
+        # Mostra il path con un'etichetta tipo di file per orientare l'LLM
+        header = f"[{i}] {r.path}  (tipo: {r.file_type}"
+        if r.truncated:
+            header += f", troncato a {r.char_count}/{r.original_char_count} char"
+        header += ")"
+        lines.append(header)
+        lines.append(r.content)
+    lines.append(_FILE_ANALYSIS_FOOTER)
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +360,10 @@ class Orchestrator:
         enable_stt:     Se True, carica WhisperSTT per i turni voice.
         enable_web_search: Se True, abilita la ricerca web SearXNG
                         (soggetta anche a allowed_tools del profilo).
+        enable_file_analysis: Se True, abilita l'analisi di file locali
+                        citati nel testo utente (soggetta anche a
+                        allowed_tools del profilo). Riusa lo STT
+                        eventualmente caricato per i file audio.
         context_window: Dimensione max della finestra di storia (n. messaggi).
                         0 = usa settings.memory.context_window_messages.
 
@@ -271,25 +376,28 @@ class Orchestrator:
 
     def __init__(
         self,
-        personality:       Optional[str] = None,
-        enable_tts:        bool          = True,
-        enable_stt:        bool          = True,
-        enable_web_search: bool          = True,
-        context_window:    int           = 0,
+        personality:         Optional[str] = None,
+        enable_tts:          bool          = True,
+        enable_stt:          bool          = True,
+        enable_web_search:   bool          = True,
+        enable_file_analysis: bool         = True,
+        context_window:      int           = 0,
     ) -> None:
-        self._personality_name  = personality or settings.personality.default_personality
-        self._enable_tts        = enable_tts
-        self._enable_stt        = enable_stt
-        self._enable_web_search = enable_web_search
-        self._context_window    = context_window or settings.memory.context_window_messages
+        self._personality_name    = personality or settings.personality.default_personality
+        self._enable_tts          = enable_tts
+        self._enable_stt          = enable_stt
+        self._enable_web_search   = enable_web_search
+        self._enable_file_analysis = enable_file_analysis
+        self._context_window      = context_window or settings.memory.context_window_messages
 
         # Moduli — inizializzati in load()
-        self._llm:         Optional[OllamaClient]      = None
-        self._memory:      Optional[MemoryManager]     = None
-        self._personality: Optional[PersonalityManager] = None
-        self._stt:         Optional[Any]               = None  # WhisperSTT (import lazy)
-        self._tts:         Optional[Any]               = None  # Qwen3TTS   (import lazy)
-        self._web_search:  Optional[SearXNGClient]     = None
+        self._llm:           Optional[OllamaClient]      = None
+        self._memory:        Optional[MemoryManager]     = None
+        self._personality:   Optional[PersonalityManager] = None
+        self._stt:           Optional[Any]               = None  # WhisperSTT (import lazy)
+        self._tts:           Optional[Any]               = None  # Qwen3TTS   (import lazy)
+        self._web_search:    Optional[SearXNGClient]     = None
+        self._file_analyzer: Optional[FileAnalyzer]      = None
 
         self._loaded: bool = False
 
@@ -329,11 +437,15 @@ class Orchestrator:
         # SearXNGClient espone aclose() (chiude httpx), come OllamaClient
         if self._web_search:
             tasks.append(self._web_search.aclose())
+        # FileAnalyzer.aclose() è no-op ma manteniamo il pattern simmetrico
+        if self._file_analyzer:
+            tasks.append(self._file_analyzer.aclose())
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
         self._llm = self._memory = self._personality = None
         self._stt = self._tts = self._web_search = None
+        self._file_analyzer = None
         self._loaded = False
         logger.info("orchestrator | chiuso")
 
@@ -392,15 +504,36 @@ class Orchestrator:
                 )
                 self._web_search = None
 
+        # --- File analysis (estrattore puro, costo zero in caricamento) ---
+        # Riceve l'istanza STT eventualmente già caricata (per l'estrazione
+        # audio); se STT non è disponibile, gli estrattori non-audio
+        # funzionano comunque e l'audio degrada gentilmente.
+        if self._enable_file_analysis:
+            try:
+                cfg = settings.file_analysis
+                self._file_analyzer = FileAnalyzer(
+                    stt              = self._stt,
+                    max_chars_inline = cfg.max_chars_per_file,
+                    max_file_bytes   = cfg.max_file_bytes,
+                    safe_dirs        = cfg.safe_dirs,
+                )
+                logger.debug("orchestrator | file_analysis inizializzato")
+            except Exception as exc:
+                logger.warning(
+                    "orchestrator | file_analysis non disponibile: {} — continuo senza", exc
+                )
+                self._file_analyzer = None
+
         self._loaded = True
         elapsed = (time.monotonic() - t0) * 1000
         logger.info(
-            "orchestrator | pronto in {:.0f}ms | llm=✓ memory={} stt={} tts={} web={}",
+            "orchestrator | pronto in {:.0f}ms | llm=✓ memory={} stt={} tts={} web={} file={}",
             elapsed,
             "✓" if self._memory else "✗",
             "✓" if self._stt else "✗",
             "✓" if self._tts else "✗",
             "✓" if self._web_search else "✗",
+            "✓" if self._file_analyzer else "✗",
         )
 
     async def _load_stt(self) -> None:
@@ -470,6 +603,10 @@ class Orchestrator:
 
         # 4. Personality
         self._personality.apply_to_context(ctx)
+
+        # 4.4 File analysis (se il testo utente cita path con estensione
+        # supportata + tool consentito dal profilo)
+        await self._run_file_analysis(ctx)
 
         # 4.5 Web search (se trigger keyword + tool consentito dal profilo)
         await self._run_web_search(ctx)
@@ -544,13 +681,14 @@ class Orchestrator:
     def status(self) -> OrchestratorStatus:
         """Snapshot dello stato corrente per diagnostica."""
         return OrchestratorStatus(
-            llm_ok         = self._llm is not None,
-            memory_ok      = self._memory is not None,
-            personality_ok = self._personality is not None and self._personality._loaded,
-            stt_ok         = self._stt is not None,
-            tts_ok         = self._tts is not None,
-            web_search_ok  = self._web_search is not None,
-            active_sessions= len(self._session_histories),
+            llm_ok          = self._llm is not None,
+            memory_ok       = self._memory is not None,
+            personality_ok  = self._personality is not None and self._personality._loaded,
+            stt_ok          = self._stt is not None,
+            tts_ok          = self._tts is not None,
+            web_search_ok   = self._web_search is not None,
+            file_analysis_ok= self._file_analyzer is not None,
+            active_sessions = len(self._session_histories),
         )
 
     def switch_personality(self, name: str) -> None:
@@ -618,6 +756,126 @@ class Orchestrator:
             ctx.error = f"STT error: {exc}"
             logger.error("orchestrator._run_stt | fallito: {}", exc)
             return False
+
+    async def _run_file_analysis(self, ctx: AssistantContext) -> None:
+        """
+        Se il testo utente contiene path con estensione supportata e il
+        profilo attivo consente il tool 'file_analysis', analizza fino a
+        max_files_per_turn file e inietta i contenuti nel system prompt.
+
+        Pattern identico a _run_web_search:
+            1. Skip se il modulo non è inizializzato.
+            2. Skip se nessun path è riconosciuto nel testo.
+            3. Skip se il profilo non consente il tool.
+            4. Analizza i file in parallelo.
+            5. Applica fair-share sui caratteri totali (cap globale).
+            6. Inietta il blocco nel system prompt e registra il tool call.
+
+        Errori non fatali: file singoli falliti vengono saltati (con log)
+        e gli altri proseguono. Tutto il modulo failing è errore non fatale.
+        """
+        if not self._file_analyzer:
+            return
+
+        cfg = settings.file_analysis
+
+        # 1) Riconosci path nel testo utente
+        paths = _extract_file_paths(ctx.user_text, max_paths=cfg.max_files_per_turn)
+        if not paths:
+            return
+
+        # 2) Permesso dal profilo
+        try:
+            allowed = self._personality.active.allows_tool(_FILE_ANALYSIS_TOOL)
+        except Exception:
+            allowed = False
+        if not allowed:
+            logger.debug(
+                "orchestrator._run_file_analysis | tool '{}' non consentito dal profilo '{}'",
+                _FILE_ANALYSIS_TOOL,
+                ctx.personality_name,
+            )
+            return
+
+        logger.info(
+            "orchestrator._run_file_analysis | {} path rilevati: {}",
+            len(paths), [p[-60:] for p in paths],
+        )
+
+        # 3) Analisi in parallelo. asyncio.gather con return_exceptions=True
+        # protegge contro estrattori che potrebbero sollevare (FileAnalyzer
+        # normalmente non solleva, ma siamo difensivi sul livello superiore).
+        t0 = time.monotonic()
+        try:
+            raw_results = await asyncio.gather(
+                *(self._file_analyzer.analyze(p) for p in paths),
+                return_exceptions=True,
+            )
+        except Exception as exc:
+            logger.warning(
+                "orchestrator._run_file_analysis | analisi fallita: {} — continuo", exc
+            )
+            return
+        ctx.set_timing("file_analysis", (time.monotonic() - t0) * 1000)
+
+        # 4) Filtra/normalizza i risultati
+        results: list[AnalysisResult] = []
+        for path, item in zip(paths, raw_results):
+            if isinstance(item, Exception):
+                logger.warning(
+                    "orchestrator._run_file_analysis | eccezione su '{}': {}",
+                    path[-60:], item,
+                )
+                continue
+            results.append(item)
+
+        if not results:
+            return
+
+        # 5) Fair-share sui caratteri totali. Se i contenuti utili insieme
+        # superano max_total_chars, ridistribuiamo il budget in parti uguali
+        # tra i file con contenuto valido, troncando ciascuno.
+        usable = [r for r in results if r.error is None and r.content.strip()]
+        if usable:
+            total_chars = sum(r.char_count for r in usable)
+            if total_chars > cfg.max_total_chars:
+                budget_per_file = max(500, cfg.max_total_chars // len(usable))
+                logger.debug(
+                    "orchestrator._run_file_analysis | fair-share: {} file, "
+                    "budget/file={}", len(usable), budget_per_file,
+                )
+                for r in usable:
+                    if r.char_count > budget_per_file:
+                        # Tronchiamo "in place" il content; original_char_count
+                        # già rispecchia la dimensione pre-truncation iniziale,
+                        # qui aggiorniamo solo il visibile e segniamo truncated.
+                        notice = (
+                            f"\n\n[...contenuto troncato dal cap globale: "
+                            f"mostrati {budget_per_file} di {r.char_count} char]"
+                        )
+                        r.content = r.content[:budget_per_file] + notice
+                        r.char_count = len(r.content)
+                        r.truncated = True
+
+        # 6) Inietta nel system prompt
+        block = _format_file_analysis_block(results)
+        if block:
+            ctx.system_prompt = (ctx.system_prompt or "") + block
+
+        # 7) Registra il tool call (anche se tutti i file sono falliti, per
+        # diagnostica)
+        ctx.add_tool_call(
+            tool=_FILE_ANALYSIS_TOOL,
+            args={"paths": paths, "max_files_per_turn": cfg.max_files_per_turn},
+            result=[r.to_log_dict() for r in results],
+        )
+
+        n_ok = sum(1 for r in results if r.error is None and r.content.strip())
+        n_err = sum(1 for r in results if r.error is not None)
+        logger.info(
+            "orchestrator._run_file_analysis | analizzati={} ok={} err={} chars_iniettati={}",
+            len(results), n_ok, n_err, len(block),
+        )
 
     async def _run_web_search(self, ctx: AssistantContext) -> None:
         """
@@ -791,6 +1049,7 @@ class Orchestrator:
                 f"<Orchestrator personality='{self._personality_name}' "
                 f"memory={'✓' if self._memory else '✗'} "
                 f"tts={'✓' if self._tts else '✗'} "
-                f"stt={'✓' if self._stt else '✗'}>"
+                f"stt={'✓' if self._stt else '✗'} "
+                f"file={'✓' if self._file_analyzer else '✗'}>"
             )
         return "<Orchestrator [non caricato]>"
