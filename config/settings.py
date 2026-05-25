@@ -2,6 +2,29 @@
 config/settings.py
 Unica fonte di verità per tutta la configurazione.
 Uso: from config.settings import settings
+
+NOTA su env_file e subclass: pydantic-settings 2.x NON eredita
+`env_file` dalle BaseSettings annidate via `default_factory`. Per
+questo motivo ogni subclass deve dichiarare esplicitamente un suo
+`SettingsConfigDict(env_file=PROJECT_ROOT/".env", ...)`. Senza questa
+ripetizione, le variabili nel `.env` verrebbero ignorate per quella
+subclass anche se i nomi/prefissi sono corretti.
+
+Convenzioni per env_prefix:
+- OllamaSettings        → OLLAMA_*
+- STTSettings           → STT_*           (alias storici: VAD_THRESHOLD, VAD_SILENCE_DURATION)
+- TTSSettings           → TTS_*
+- SpeakerSettings       → SPEAKER_*
+- MemorySettings        → MEMORY_*
+- WebSearchSettings     → WEB_SEARCH_*    (alias storici: SEARXNG_URL, WEB_SCRAPE_TIMEOUT)
+- PCControlSettings     → PC_CONTROL_*
+- TerminalAgentSettings → TERMINAL_AGENT_*
+- FileAnalysisSettings  → FILE_ANALYSIS_*
+- PersonalitySettings   → PERSONALITY_*   (alias storico: DEFAULT_PERSONALITY)
+- APISettings           → API_*
+
+Quando un campo ha un alias esplicito, l'alias ha precedenza sul
+prefisso: SEARXNG_URL viene letto al posto di WEB_SEARCH_SEARXNG_URL.
 """
 from __future__ import annotations
 from pathlib import Path
@@ -16,7 +39,12 @@ os.environ.setdefault("HF_HOME",    str(PROJECT_ROOT / "data" / "hf-cache"))
 os.environ.setdefault("TORCH_HOME", str(PROJECT_ROOT / "data" / "torch-cache"))
 
 class OllamaSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="OLLAMA_")
+    model_config = SettingsConfigDict(
+        env_prefix="OLLAMA_",
+        env_file=PROJECT_ROOT / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
     base_url: str = "http://localhost:11434"
     # Default = tag Ollama realmente installati. Override via .env
     # (OLLAMA_CHAT_MODEL, OLLAMA_CODE_MODEL, ...). Devono esistere su
@@ -28,7 +56,12 @@ class OllamaSettings(BaseSettings):
     timeout: int = 120
 
 class STTSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="STT_")
+    model_config = SettingsConfigDict(
+        env_prefix="STT_",
+        env_file=PROJECT_ROOT / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
     model: str = "large-v3-turbo"
     device: Literal["cpu", "cuda", "auto"] = "cpu"
     compute_type: Literal["int8", "float16", "float32"] = "int8"
@@ -37,7 +70,12 @@ class STTSettings(BaseSettings):
     vad_silence_duration: float = Field(0.8, alias="VAD_SILENCE_DURATION")
 
 class TTSSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="TTS_")
+    model_config = SettingsConfigDict(
+        env_prefix="TTS_",
+        env_file=PROJECT_ROOT / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
     engine: Literal["kokoro", "qwen3"] = "qwen3"
     voice: str = "mercoledì"
     speed: float = Field(1.0, ge=0.5, le=2.0)
@@ -47,11 +85,22 @@ class TTSSettings(BaseSettings):
     model_type: Literal["Base", "CustomVoice", "VoiceDesign"] = Field("Base", alias="TTS_MODEL_TYPE")
 
 class SpeakerSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="SPEAKER_")
+    model_config = SettingsConfigDict(
+        env_prefix="SPEAKER_",
+        env_file=PROJECT_ROOT / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
     id_threshold: float = Field(0.75, alias="SPEAKER_ID_THRESHOLD")
     enroll_seconds: int = Field(30, alias="SPEAKER_ENROLL_SECONDS")
 
 class MemorySettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="MEMORY_",
+        env_file=PROJECT_ROOT / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
     chroma_persist_dir: Path = PROJECT_ROOT / "data" / "embeddings"
     # NB: l'embedding è generato da Ollama (settings.ollama.embed_model,
     # nomic-embed-text). Non esiste un embedding sentence-transformers locale.
@@ -59,12 +108,30 @@ class MemorySettings(BaseSettings):
     context_window_messages: int = 20
 
 class WebSearchSettings(BaseSettings):
+    # NOTA: env_prefix è "WEB_SEARCH_", ma alcuni campi mantengono alias
+    # storici (SEARXNG_URL, WEB_SCRAPE_TIMEOUT) per non rompere i .env
+    # esistenti. Quando un campo ha alias, pydantic-settings ignora il
+    # prefix per quel campo (l'alias ha precedenza assoluta).
+    model_config = SettingsConfigDict(
+        env_prefix="WEB_SEARCH_",
+        env_file=PROJECT_ROOT / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+    # alias mantenuto: SEARXNG_URL (no prefisso)
     searxng_url: str = Field("http://localhost:8080", alias="SEARXNG_URL")
-    max_results: int = Field(5, alias="WEB_SEARCH_MAX_RESULTS")
+    # senza alias: viene letta come WEB_SEARCH_MAX_RESULTS (era già così)
+    max_results: int = 5
+    # alias mantenuto: WEB_SCRAPE_TIMEOUT (storico, senza prefisso WEB_SEARCH_)
     scrape_timeout: int = Field(10, alias="WEB_SCRAPE_TIMEOUT")
 
 class PCControlSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="PC_CONTROL_")
+    model_config = SettingsConfigDict(
+        env_prefix="PC_CONTROL_",
+        env_file=PROJECT_ROOT / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
     allow_delete: bool = False
     allow_sudo: bool = False
     safe_dirs: list[str] = ["/home", "/tmp", "/media"]
@@ -181,11 +248,24 @@ class FileAnalysisSettings(BaseSettings):
 
 
 class PersonalitySettings(BaseSettings):
+    # env_prefix "PERSONALITY_", ma il campo default_personality mantiene
+    # alias storico "DEFAULT_PERSONALITY" (senza prefisso) per backcompat.
+    model_config = SettingsConfigDict(
+        env_prefix="PERSONALITY_",
+        env_file=PROJECT_ROOT / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
     default_personality: str = Field("default", alias="DEFAULT_PERSONALITY")
     config_dir: Path = PROJECT_ROOT / "config" / "personalities"
 
 class APISettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="API_")
+    model_config = SettingsConfigDict(
+        env_prefix="API_",
+        env_file=PROJECT_ROOT / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
     host: str = "127.0.0.1"
     port: int = 8000
     reload: bool = False
