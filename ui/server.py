@@ -1,12 +1,18 @@
 """ui/server.py — FastAPI app con tutti gli endpoint inclusi model switching."""
 from __future__ import annotations
 import json
+import re
+import time
+import unicodedata
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
+from config.settings import settings
 from core.logger import logger
+from modules.file_analysis import FileAnalyzer
 import json
 from pathlib import Path
 
@@ -70,6 +76,58 @@ class TermProposalIdBody(BaseModel):    proposal_id: str
 class TermModelVisibilityBody(BaseModel):
     name:    str
     visible: bool
+
+
+# ---------------------------------------------------------------------------
+# Helper upload file (per /api/uploads)
+# ---------------------------------------------------------------------------
+
+# Directory di destinazione: data/uploads/<session_id>/<timestamp>_<filename>.
+# Visibile sul filesystem (utente può ispezionare), non transitoria.
+_UPLOADS_DIR = settings.data_dir / "uploads"
+
+# Set di estensioni che FileAnalyzer sa estrarre.
+# Lo calcoliamo a partire dal modulo per restare in sync senza duplicare.
+_ALLOWED_UPLOAD_EXTS: set[str] = set(FileAnalyzer(safe_dirs=[]).supported_extensions())
+
+# Caratteri permessi nel filename "safe" (oltre a lettere e cifre).
+_SAFE_FILENAME_EXTRA = re.compile(r"[^a-zA-Z0-9._-]+")
+
+
+def _safe_filename(name: str) -> str:
+    """
+    Sanifica il nome file caricato dall'utente:
+    - normalizza unicode (rimuove accenti)
+    - tiene solo a-zA-Z0-9, '.', '_', '-'
+    - tronca a 80 char (max sensato per un filesystem leggibile)
+    - garantisce un nome non vuoto
+
+    Esempi:
+        "Contratto firmato.PDF"   → "Contratto_firmato.PDF"
+        "résumé / 2024.docx"      → "resume_2024.docx"
+        "../etc/passwd"           → "etc_passwd"
+    """
+    if not name:
+        return "file"
+    # Tieni solo il basename (no path traversal)
+    name = Path(name).name
+    # Decomposizione unicode + drop dei combining (accenti)
+    normalized = unicodedata.normalize("NFKD", name)
+    no_accents = "".join(c for c in normalized if not unicodedata.combining(c))
+    # Sostituisci ogni run di char non-safe con underscore
+    cleaned = _SAFE_FILENAME_EXTRA.sub("_", no_accents)
+    cleaned = cleaned.strip("._-") or "file"
+    # Truncate
+    return cleaned[:80]
+
+
+def _session_dir_for(session_id: str | None) -> Path:
+    """Sub-cartella per la sessione (o 'default' se non disponibile)."""
+    safe_sid = _SAFE_FILENAME_EXTRA.sub("_", (session_id or "default"))[:64]
+    d = _UPLOADS_DIR / safe_sid
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
 
 def create_app(ws_manager: "WSManager") -> tuple[FastAPI, dict]:
     app   = FastAPI(title="local-assistant", docs_url=None, redoc_url=None)
@@ -142,6 +200,81 @@ def create_app(ws_manager: "WSManager") -> tuple[FastAPI, dict]:
         loop = state["loop"]
         if loop is None: return JSONResponse({"ok":False,"error":"loop non pronto"},status_code=503)
         await loop.send_text(body.text); return JSONResponse({"ok":True})
+
+    @app.post("/api/uploads")
+    async def uploads(file: UploadFile = File(...)):
+        """
+        Carica un file utente, lo salva in data/uploads/<session_id>/ e
+        restituisce il path assoluto da iniettare nel messaggio successivo.
+
+        Validazioni:
+          - estensione tra quelle supportate da FileAnalyzer (19 totali)
+          - dimensione <= settings.file_analysis.max_file_bytes
+          - sanitizzazione del filename (no path traversal, no caratteri
+            esotici, troncatura a 80 char)
+
+        Risposta:
+            { ok, path, name, size, ext }
+        oppure 400/413/500 con { ok: false, error }.
+        """
+        loop = state["loop"]
+        session_id = loop.session_id if loop is not None else "default"
+
+        # 1) Validazione estensione
+        original_name = file.filename or "file"
+        ext = Path(original_name).suffix.lower()
+        if ext not in _ALLOWED_UPLOAD_EXTS:
+            allowed = ", ".join(sorted(_ALLOWED_UPLOAD_EXTS))
+            raise HTTPException(
+                status_code=400,
+                detail=f"Estensione '{ext}' non supportata. Supportate: {allowed}",
+            )
+
+        # 2) Lettura in memoria (streaming sarebbe più gentile ma il limite
+        #    è 50MB di default — accettabile per evitare race su scrittura
+        #    parziale in caso d'errore).
+        max_bytes = settings.file_analysis.max_file_bytes
+        try:
+            content = await file.read()
+        except Exception as exc:
+            logger.warning("ui.server | upload read failed: {}", exc)
+            raise HTTPException(status_code=500, detail=f"Lettura fallita: {exc}")
+        finally:
+            await file.close()
+
+        # 3) Limite dimensione
+        if len(content) > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"File troppo grande ({len(content)} byte > {max_bytes}). "
+                    "Soglia regolabile via FILE_ANALYSIS_MAX_FILE_BYTES nel .env."
+                ),
+            )
+
+        # 4) Filename safe + timestamp per evitare collisioni nello stesso secondo
+        safe_name = _safe_filename(original_name)
+        ts        = datetime.now().strftime("%Y%m%d%H%M%S")
+        target    = _session_dir_for(session_id) / f"{ts}_{safe_name}"
+
+        # 5) Scrittura su disco
+        try:
+            target.write_bytes(content)
+        except Exception as exc:
+            logger.warning("ui.server | upload write failed: {}", exc)
+            raise HTTPException(status_code=500, detail=f"Scrittura fallita: {exc}")
+
+        logger.info(
+            "ui.server | upload OK | session='{}' name='{}' size={}B path='{}'",
+            session_id, safe_name, len(content), target,
+        )
+        return JSONResponse({
+            "ok":   True,
+            "path": str(target),
+            "name": safe_name,
+            "size": len(content),
+            "ext":  ext,
+        })
 
 
     @app.get("/api/personalities")
@@ -271,7 +404,7 @@ def create_app(ws_manager: "WSManager") -> tuple[FastAPI, dict]:
         return JSONResponse({"ok":True,"key":body.key})
 
     @app.get("/api/settings")
-    async def settings():
+    async def ui_settings():
         return JSONResponse(_load_ui_settings())
 
     # ── Mode (chat | terminal) ───────────────────────────────────────

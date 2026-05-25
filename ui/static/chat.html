@@ -462,6 +462,49 @@ body.sel-open .copy-btn{pointer-events:none!important;opacity:0!important}
 }
 .iattach:hover{background:var(--card-h);color:var(--t1)}
 .iattach:active{transform:scale(.88)}
+.iattach.busy{opacity:.5;cursor:wait}
+
+/* Upload chips: anteprima file allegati sopra la textarea */
+.attach-row{
+  display:flex;flex-wrap:wrap;gap:6px;padding:0 4px 6px;
+  max-height:0;overflow:hidden;transition:max-height .2s var(--snap);
+}
+.attach-row.on{max-height:140px;padding-bottom:8px}
+.attach-chip{
+  display:inline-flex;align-items:center;gap:6px;
+  background:var(--card);border:1px solid var(--b1);border-radius:10px;
+  padding:5px 8px 5px 10px;font-size:12px;color:var(--t2);max-width:240px;
+  animation:min .2s var(--snap);
+}
+.attach-chip-ic{font-size:14px;flex-shrink:0}
+.attach-chip-nm{
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;
+  font-family:var(--mono);font-size:11px;color:var(--t1);
+}
+.attach-chip-sz{font-family:var(--mono);font-size:10px;color:var(--t4);flex-shrink:0}
+.attach-chip-rm{
+  width:18px;height:18px;border:none;background:transparent;color:var(--t3);
+  cursor:pointer;font-size:14px;line-height:1;padding:0;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;flex-shrink:0;
+  transition:background .12s,color .12s;
+}
+.attach-chip-rm:hover{background:var(--card-h);color:#ff453a}
+
+/* Drop overlay: appare quando l'utente trascina un file sulla finestra */
+.drop-ov{
+  display:none;position:fixed;inset:0;z-index:9999;pointer-events:none;
+  background:rgba(0,0,0,.35);backdrop-filter:blur(6px);
+}
+.drop-ov.on{display:flex;align-items:center;justify-content:center}
+.drop-bx{
+  background:var(--card);border:2px dashed var(--ac);border-radius:20px;
+  padding:48px 64px;display:flex;flex-direction:column;align-items:center;gap:12px;
+  box-shadow:0 16px 60px var(--ac-glow);animation:min .25s var(--snap);
+}
+.drop-ic{font-size:48px;animation:efloat 2.5s ease-in-out infinite}
+.drop-tx{font-size:15px;font-weight:600;color:var(--t1)}
+.drop-sub{font-size:12px;color:var(--t3);font-family:var(--mono)}
+
 .itxt{
   flex:1;background:none;border:none;outline:none;
   color:var(--t1);font-family:var(--font);font-size:14px;font-weight:400;
@@ -654,8 +697,10 @@ body.sel-open .copy-btn{pointer-events:none!important;opacity:0!important}
     </div>
 
     <div class="input-zone">
+      <div class="attach-row" id="attach-row"></div>
       <div class="ibar">
-        <button class="iattach" title="Allega (presto)">📎</button>
+        <button class="iattach" id="iattach" title="Allega file">📎</button>
+        <input type="file" id="ifile" hidden multiple>
         <div class="wrec" id="wrec"><div class="wr"></div><div class="wr"></div><div class="wr"></div><div class="wr"></div><div class="wr"></div></div>
         <textarea id="itxt" class="itxt" placeholder="Scrivi un messaggio…" rows="1"></textarea>
         <button class="itts" id="sel-tts" title="Voce assistente: attiva">
@@ -680,6 +725,15 @@ body.sel-open .copy-btn{pointer-events:none!important;opacity:0!important}
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- Drag & drop overlay -->
+<div class="drop-ov" id="drop-ov">
+  <div class="drop-bx">
+    <div class="drop-ic">📁</div>
+    <div class="drop-tx">Rilascia il file per allegarlo</div>
+    <div class="drop-sub">PDF · DOCX · TXT · MD · audio · max 3 file</div>
+  </div>
+</div>
 
 <script>
 const $=id=>document.getElementById(id);
@@ -1019,8 +1073,183 @@ $('hd-pal').addEventListener('click',()=>palOpen?closePal():openPal());
 /* Hotkeys */
 document.addEventListener('keydown',e=>{if(capPTT)return;if((e.ctrlKey||e.metaKey)&&e.key==='k'){e.preventDefault();palOpen?closePal():openPal();return}if(e.key==='Escape'&&palOpen){e.preventDefault();closePal();return}if((e.ctrlKey||e.metaKey)&&e.key==='n'){e.preventDefault();newSess();return}if((e.ctrlKey||e.metaKey)&&e.key==='e'){e.preventDefault();exportChat();return}if(e.key==='t'&&!e.ctrlKey&&!e.metaKey&&document.activeElement!==itxt&&document.activeElement!==palIn)setTheme(!isDark)});
 
+/* ── Upload allegati per file_analysis ─────────────────────────────────── */
+const MAX_ATTACHMENTS = 3;
+const ALLOWED_EXTS = [
+  '.pdf','.docx','.txt','.md','.log','.rst','.yaml','.yml',
+  '.html','.htm','.json','.csv','.tsv','.xml',
+  '.wav','.mp3','.ogg','.flac','.m4a','.opus',
+];
+const iattach = $('iattach');
+const ifile   = $('ifile');
+const attachRow = $('attach-row');
+const dropOv  = $('drop-ov');
+let attachments = [];   // [{path, name, size, ext}]
+
+function fmtBytes(n){
+  if(n < 1024) return n + ' B';
+  if(n < 1024*1024) return (n/1024).toFixed(1) + ' KB';
+  return (n/1024/1024).toFixed(1) + ' MB';
+}
+
+function iconForExt(ext){
+  if(['.pdf','.docx','.txt','.md','.log','.rst','.yaml','.yml','.html','.htm'].includes(ext)) return '📄';
+  if(['.json','.xml'].includes(ext)) return '🔧';
+  if(['.csv','.tsv'].includes(ext)) return '📊';
+  if(['.wav','.mp3','.ogg','.flac','.m4a','.opus'].includes(ext)) return '🎵';
+  return '📎';
+}
+
+function renderAttachments(){
+  attachRow.innerHTML = '';
+  if(attachments.length === 0){
+    attachRow.classList.remove('on');
+    return;
+  }
+  attachRow.classList.add('on');
+  attachments.forEach((a, i) => {
+    const chip = document.createElement('div');
+    chip.className = 'attach-chip';
+    chip.innerHTML = `
+      <span class="attach-chip-ic">${iconForExt(a.ext)}</span>
+      <span class="attach-chip-nm" title="${esc(a.path)}">${esc(a.name)}</span>
+      <span class="attach-chip-sz">${fmtBytes(a.size)}</span>
+      <button class="attach-chip-rm" data-idx="${i}" title="Rimuovi">×</button>
+    `;
+    chip.querySelector('.attach-chip-rm').addEventListener('click', e => {
+      const idx = parseInt(e.currentTarget.dataset.idx, 10);
+      attachments.splice(idx, 1);
+      renderAttachments();
+    });
+    attachRow.appendChild(chip);
+  });
+}
+
+async function uploadFile(file){
+  // Pre-check estensione (UX rapida, il server controlla comunque)
+  const lastDot = file.name.lastIndexOf('.');
+  const ext = lastDot < 0 ? '' : file.name.slice(lastDot).toLowerCase();
+  if(!ALLOWED_EXTS.includes(ext)){
+    showToast(`Estensione ${ext || 'sconosciuta'} non supportata`, 3500);
+    return null;
+  }
+  // Limite numerico
+  if(attachments.length >= MAX_ATTACHMENTS){
+    showToast(`Massimo ${MAX_ATTACHMENTS} file per messaggio`, 2500);
+    return null;
+  }
+
+  iattach.classList.add('busy');
+  try{
+    const fd = new FormData();
+    fd.append('file', file);
+    const r = await fetch('/api/uploads', {method: 'POST', body: fd});
+    if(!r.ok){
+      let msg = `Upload fallito (HTTP ${r.status})`;
+      try{ const j = await r.json(); if(j.detail) msg = j.detail; }catch{}
+      showToast(msg, 4000);
+      return null;
+    }
+    const j = await r.json();
+    if(!j.ok){
+      showToast(j.error || 'Upload fallito', 3500);
+      return null;
+    }
+    return j;   // {ok, path, name, size, ext}
+  }catch(e){
+    console.warn('upload failed', e);
+    showToast('Upload fallito: ' + e.message, 4000);
+    return null;
+  }finally{
+    iattach.classList.remove('busy');
+  }
+}
+
+async function handleFiles(fileList){
+  const files = Array.from(fileList || []);
+  if(files.length === 0) return;
+  // Caricamento seriale per non saturare e per messaggi d'errore distinti
+  for(const f of files){
+    if(attachments.length >= MAX_ATTACHMENTS){
+      showToast(`Massimo ${MAX_ATTACHMENTS} file per messaggio`, 2500);
+      break;
+    }
+    const result = await uploadFile(f);
+    if(result){
+      attachments.push(result);
+      renderAttachments();
+    }
+  }
+  itxt.focus();
+}
+
+iattach.addEventListener('click', () => ifile.click());
+ifile.addEventListener('change', e => {
+  handleFiles(e.target.files);
+  e.target.value = '';   // permette di re-selezionare lo stesso file
+});
+
+/* Drag & drop sulla finestra */
+let dragDepth = 0;
+window.addEventListener('dragenter', e => {
+  if(!e.dataTransfer || !e.dataTransfer.types.includes('Files')) return;
+  e.preventDefault();
+  dragDepth++;
+  dropOv.classList.add('on');
+});
+window.addEventListener('dragover', e => {
+  if(!e.dataTransfer || !e.dataTransfer.types.includes('Files')) return;
+  e.preventDefault();
+});
+window.addEventListener('dragleave', e => {
+  if(!e.dataTransfer) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if(dragDepth === 0) dropOv.classList.remove('on');
+});
+window.addEventListener('drop', e => {
+  if(!e.dataTransfer) return;
+  e.preventDefault();
+  dragDepth = 0;
+  dropOv.classList.remove('on');
+  if(e.dataTransfer.files && e.dataTransfer.files.length){
+    handleFiles(e.dataTransfer.files);
+  }
+});
+
 /* Send */
-async function sendMsg(){const t=itxt.value.trim();if(!t)return;itxt.value='';autoR();isend.disabled=true;try{await fetch('/api/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})})}catch(e){console.warn(e)}finally{isend.disabled=false;itxt.focus()}}
+async function sendMsg(){
+  const t = itxt.value.trim();
+  // Invio "solo allegati" permesso (es. trascina un PDF e invia)
+  if(!t && attachments.length === 0) return;
+
+  // Compone il payload finale: testo + path degli allegati.
+  // L'orchestrator riconosce i path assoluti tramite _FILE_PATH_RE.
+  let payload = t;
+  if(attachments.length > 0){
+    const lines = attachments.map(a => `[Allegato: ${a.path}]`);
+    payload = (t ? t + '\n\n' : '') + lines.join('\n');
+  }
+
+  itxt.value = '';
+  autoR();
+  attachments = [];
+  renderAttachments();
+
+  isend.disabled = true;
+  try{
+    await fetch('/api/send', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text: payload}),
+    });
+  }catch(e){
+    console.warn(e);
+    showToast('Invio fallito: ' + e.message, 3500);
+  }finally{
+    isend.disabled = false;
+    itxt.focus();
+  }
+}
 itxt.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMsg()}});
 isend.addEventListener('click',sendMsg);
 itxt.addEventListener('input',autoR);
