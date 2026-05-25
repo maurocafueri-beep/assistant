@@ -85,7 +85,7 @@ def mock_tts() -> Qwen3TTS:
     tts._language          = "it"
     tts._cuda_device_index = 1
     tts._port              = 8765
-    tts._server_timeout_s  = 120.0
+    tts._server_timeout_s  = 240.0
     tts._base_url          = "http://127.0.0.1:8765"
     tts._process           = None
     tts._http              = _make_mock_http()

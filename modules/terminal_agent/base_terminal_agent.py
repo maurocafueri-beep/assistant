@@ -425,6 +425,60 @@ def _truncate(text: str, max_bytes: int) -> tuple[str, bool]:
     return cut + f"\n... [output troncato a {max_bytes} bytes]", True
 
 
+# Regex per riconoscere comandi che invocano apt/dpkg/dpkg-reconfigure.
+# Match su:
+#   - apt / apt-get / aptitude come PRIMO token o dopo:
+#       pkexec, sudo, xargs   (wrapper comandi)
+#       ; & | && ||            (separatori shell)
+#       ' "                    (entrata in stringa quoted di bash -c)
+#   - dpkg-reconfigure
+#
+# Volutamente non matchiamo `dpkg -l` o simili read-only. Mettere
+# DEBIAN_FRONTEND in più non fa danno: matchare anche dpkg sarebbe
+# accettabile, ma restiamo conservativi sui pattern positivi.
+_APT_CMD_RE = re.compile(
+    r"""(?:^|[;&|'"]\s*|\b(?:pkexec|sudo|xargs)\s+)
+        (?:apt(?:-get)?|aptitude|dpkg-reconfigure)\b""",
+    re.VERBOSE,
+)
+
+
+def _command_needs_noninteractive_apt(cmd: str) -> bool:
+    """
+    True se il comando lancia apt/apt-get/aptitude/dpkg-reconfigure e quindi
+    avrebbe bisogno di DEBIAN_FRONTEND=noninteractive per non aprire dialoghi
+    debconf su stdin (che in contesto GUI senza TTY non sono utilizzabili).
+
+    NOTA: a differenza della safety classification, qui NON strippiamo
+    le stringhe quoted. Il pattern più comune con pkexec è infatti
+        pkexec bash -c 'apt update && apt upgrade -y'
+    dove il vero comando apt è dentro le single quote. Strippandole
+    perderemmo il match. I falsi positivi (es. echo "apt update") sono
+    accettabili: aggiungere DEBIAN_FRONTEND a un comando non-apt è
+    inutile ma innocuo.
+    """
+    return _APT_CMD_RE.search(cmd) is not None
+
+
+def _build_subprocess_env(cmd: str) -> dict[str, str]:
+    """
+    Costruisce l'ambiente per il subprocess. Parte da os.environ.copy() e
+    aggiunge variabili condizionali in base al comando.
+
+    Per apt/dpkg-reconfigure aggiungiamo:
+      DEBIAN_FRONTEND=noninteractive  → debconf non chiede mai nulla
+      DEBCONF_NONINTERACTIVE_SEEN=true → sopprime domande condizionali residue
+    Senza queste, in contesto GUI senza terminale di controllo (pkexec lanciato
+    da una webview Qt), debconf stampa warning ripetuti e in alcuni casi può
+    addirittura bloccarsi su prompt che non possono essere risposti.
+    """
+    env = os.environ.copy()
+    if _command_needs_noninteractive_apt(cmd):
+        env["DEBIAN_FRONTEND"] = "noninteractive"
+        env["DEBCONF_NONINTERACTIVE_SEEN"] = "true"
+    return env
+
+
 def _extract_json(text: str) -> Optional[dict[str, Any]]:
     """
     Estrae il primo oggetto JSON da una stringa, anche se circondato da prosa.
@@ -1135,7 +1189,7 @@ class TerminalAgent:
                 cwd=cwd_before,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=os.environ.copy(),
+                env=_build_subprocess_env(proposal.command),
             )
         except FileNotFoundError as exc:
             return CommandResult(

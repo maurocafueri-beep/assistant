@@ -37,7 +37,9 @@ from modules.terminal_agent import (
 )
 from modules.terminal_agent.base_terminal_agent import (
     _CWD_SENTINEL_TAG,
+    _build_subprocess_env,
     _classify,
+    _command_needs_noninteractive_apt,
     _extract_cwd,
     _extract_json,
     _first_word,
@@ -1244,3 +1246,85 @@ class TestTerminalAgentReal:
             assert turn.proposal is not None
             if turn.result:
                 assert isinstance(turn.analysis, str)
+
+
+# ===========================================================================
+# DEBIAN_FRONTEND noninteractive per apt (e simili)
+# ===========================================================================
+
+class TestCommandNeedsNoninteractiveApt:
+    """Detection di comandi apt che richiedono DEBIAN_FRONTEND=noninteractive."""
+
+    @pytest.mark.parametrize("cmd", [
+        "apt update",
+        "apt-get install -y vim",
+        "aptitude search foo",
+        "sudo apt upgrade",
+        "pkexec apt update",
+        "pkexec apt-get install -y curl",
+        "pkexec bash -c 'apt update && apt upgrade -y'",
+        "dpkg-reconfigure locales",
+        "apt update; apt upgrade",
+        "apt update && apt upgrade",
+        "ls | xargs apt show",
+    ])
+    def test_positive(self, cmd):
+        assert _command_needs_noninteractive_apt(cmd) is True, \
+            f"atteso True per {cmd!r}"
+
+    @pytest.mark.parametrize("cmd", [
+        "ls /etc/apt",                   # 'apt' è sottostringa di un path
+        "cat aptitude.log",              # 'aptitude' è parte di un nome file
+        "cd /var/cache/apt",             # 'apt' nel path
+        "grep apt /etc/passwd",          # apt come stringa di ricerca
+        "ls -la",
+        "git pull",
+        "pip install requests",
+    ])
+    def test_negative(self, cmd):
+        assert _command_needs_noninteractive_apt(cmd) is False, \
+            f"atteso False per {cmd!r}"
+
+    @pytest.mark.parametrize("cmd", [
+        "echo 'apt update'",             # quoted: falso positivo accettato
+        "echo \"sudo apt upgrade\"",     # quoted: falso positivo accettato
+    ])
+    def test_acceptable_false_positives(self, cmd):
+        """
+        Casi dove la detection ritorna True ma il comando non è davvero apt.
+        Accettabile: aggiungere DEBIAN_FRONTEND a un echo è inutile ma innocuo.
+        Lo scegliamo intenzionalmente per non perdere il match su
+        'pkexec bash -c \"apt update\"' che è il caso comune.
+        """
+        assert _command_needs_noninteractive_apt(cmd) is True
+
+
+class TestBuildSubprocessEnv:
+    """Costruzione dell'environment per i subprocess."""
+
+    def test_apt_command_gets_debian_frontend(self):
+        env = _build_subprocess_env("apt update")
+        assert env.get("DEBIAN_FRONTEND") == "noninteractive"
+        assert env.get("DEBCONF_NONINTERACTIVE_SEEN") == "true"
+
+    def test_pkexec_apt_gets_debian_frontend(self):
+        env = _build_subprocess_env("pkexec bash -c 'apt update && apt upgrade -y'")
+        assert env.get("DEBIAN_FRONTEND") == "noninteractive"
+
+    def test_non_apt_command_does_not_get_debian_frontend(self, monkeypatch):
+        # Pulisci eventuali leftover dall'env (alcuni container CI hanno
+        # DEBIAN_FRONTEND già settato a livello di sistema).
+        monkeypatch.delenv("DEBIAN_FRONTEND", raising=False)
+        monkeypatch.delenv("DEBCONF_NONINTERACTIVE_SEEN", raising=False)
+        env = _build_subprocess_env("ls -la")
+        assert "DEBIAN_FRONTEND" not in env
+        assert "DEBCONF_NONINTERACTIVE_SEEN" not in env
+
+    def test_inherits_os_environ(self, monkeypatch):
+        monkeypatch.setenv("TEST_SENTINEL_XYZ", "value-42")
+        env = _build_subprocess_env("ls")
+        assert env.get("TEST_SENTINEL_XYZ") == "value-42"
+
+    def test_dpkg_reconfigure_gets_debian_frontend(self):
+        env = _build_subprocess_env("pkexec dpkg-reconfigure tzdata")
+        assert env.get("DEBIAN_FRONTEND") == "noninteractive"

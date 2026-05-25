@@ -208,7 +208,10 @@ class Qwen3TTS:
         language:          Codice lingua ISO (default "it").
         cuda_device_index: Indice GPU CUDA (default da settings.tts.cuda_device_index).
         port:              Porta del server HTTP (default 8765).
-        server_timeout_s:  Timeout avvio server in secondi (default 120).
+        server_timeout_s:  Timeout avvio server in secondi (default 240).
+                           Il modello Qwen3-TTS può impiegare 60-180s a
+                           caricare a freddo sulla 3060 Ti, lasciamo
+                           margine per evitare flakiness on cold start.
     """
 
     def __init__(
@@ -217,7 +220,7 @@ class Qwen3TTS:
         language:          Optional[str] = None,
         cuda_device_index: Optional[int] = None,
         port:              int   = 8765,
-        server_timeout_s:  float = 120.0,
+        server_timeout_s:  float = 240.0,
     ) -> None:
         self._profile           = profile or settings.tts.voice
         self._language          = language or getattr(settings.stt, "language", "it")
