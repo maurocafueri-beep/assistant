@@ -479,6 +479,71 @@ def _build_subprocess_env(cmd: str) -> dict[str, str]:
     return env
 
 
+# Regex per riconoscere comandi long-running che meritano un timeout esteso.
+# Pattern matchato:
+#   - all'inizio o dopo un separatore shell (; & | && ||)
+#   - dopo un wrapper noto (pkexec, sudo, xargs, time, nice, nohup)
+#   - dopo l'apertura di una stringa quoted di bash -c (' ")
+# Comandi inclusi:
+#   - package managers: apt, apt-get, aptitude, pip, pip3, npm, pnpm, yarn,
+#                       cargo, gem, brew, conda, poetry
+#   - container/build: docker, podman, make, cmake
+#   - VCS/download:    git clone, wget, curl -O / curl -o (con flag download)
+# Comandi che operano sul filesystem ma non scaricano nulla (apt list,
+# pip show, npm ls, git status, ecc.) NON sono inclusi: per loro 30s basta
+# largamente. La detection è coarse-grained ma sicura: in caso di dubbio
+# applichiamo il timeout lungo, mai più corto del default.
+_LONG_RUNNING_CMD_RE = re.compile(
+    r"""(?:^|[;&|'"]\s*|\b(?:pkexec|sudo|xargs|time|nice|nohup)\s+)
+        (?:
+            apt(?:-get)? \s+ (?:install|upgrade|update|dist-upgrade|full-upgrade|build-dep|source)
+          | aptitude     \s+ (?:install|upgrade|update|full-upgrade|safe-upgrade)
+          | (?:pip|pip3) \s+ (?:install|upgrade|wheel|download)
+          | (?:npm|pnpm|yarn) \s+ (?:install|update|upgrade|ci|add)
+          | cargo \s+ (?:build|install|update|fetch|test)
+          | gem \s+ install
+          | brew \s+ (?:install|upgrade|update)
+          | conda \s+ (?:install|update|create|upgrade)
+          | poetry \s+ (?:install|update|add)
+          | docker \s+ (?:pull|build|push)
+          | podman \s+ (?:pull|build|push)
+          | make(?:\s|$)
+          | cmake \s+ --build
+          | git \s+ clone
+          | wget(?:\s|$)
+          | curl \s+ [^|;&]*? (?:-O\b|--remote-name\b|-o\s+\S+|--output\s+\S+)
+        )
+        \b""",
+    re.VERBOSE,
+)
+
+
+def _is_long_running_command(cmd: str) -> bool:
+    """
+    True se il comando dovrebbe usare command_timeout_long invece del
+    command_timeout standard. Vedi _LONG_RUNNING_CMD_RE per il pattern.
+    """
+    return _LONG_RUNNING_CMD_RE.search(cmd) is not None
+
+
+def _detect_timeout_for_command(
+    cmd: str, default_s: int, long_s: int,
+) -> int:
+    """
+    Restituisce il timeout in secondi appropriato per il comando.
+
+    Args:
+        cmd:       comando da eseguire (stringa shell completa)
+        default_s: timeout standard (per la maggior parte dei comandi)
+        long_s:    timeout esteso per long-running (package manager,
+                   build, clone di repository, download...)
+
+    Returns:
+        long_s se _is_long_running_command(cmd), default_s altrimenti.
+    """
+    return long_s if _is_long_running_command(cmd) else default_s
+
+
 def _extract_json(text: str) -> Optional[dict[str, Any]]:
     """
     Estrae il primo oggetto JSON da una stringa, anche se circondato da prosa.
@@ -1201,9 +1266,17 @@ class TerminalAgent:
             )
 
         timed_out = False
+        # Timeout adattivo: long_s per package manager / build / clone /
+        # download, default_s per tutto il resto. La scelta è deterministica
+        # in base al pattern del comando.
+        timeout_s = _detect_timeout_for_command(
+            proposal.command,
+            default_s=self._cfg.command_timeout,
+            long_s=self._cfg.command_timeout_long,
+        )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(
-                proc.communicate(), timeout=self._cfg.command_timeout,
+                proc.communicate(), timeout=timeout_s,
             )
         except asyncio.TimeoutError:
             timed_out = True
@@ -1240,7 +1313,7 @@ class TerminalAgent:
         if timed_out:
             stderr_out = (
                 stderr_out + f"\n[terminal_agent] timeout dopo "
-                f"{self._cfg.command_timeout}s"
+                f"{timeout_s}s"
             ).strip()
 
         result = CommandResult(

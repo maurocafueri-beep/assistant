@@ -40,10 +40,12 @@ from modules.terminal_agent.base_terminal_agent import (
     _build_subprocess_env,
     _classify,
     _command_needs_noninteractive_apt,
+    _detect_timeout_for_command,
     _extract_cwd,
     _extract_json,
     _first_word,
     _is_inside,
+    _is_long_running_command,
     _second_word,
     _strip_quoted_strings,
     _truncate,
@@ -1208,6 +1210,8 @@ class TestTerminalAgentSettings:
         from config.settings import settings
         cfg = settings.terminal_agent
         assert cfg.command_timeout > 0
+        assert cfg.command_timeout_long > 0
+        assert cfg.command_timeout_long >= cfg.command_timeout
         assert cfg.max_output_bytes > 0
         assert cfg.max_iterations >= 1
         assert cfg.model_role in ("chat", "code")
@@ -1217,6 +1221,12 @@ class TestTerminalAgentSettings:
         from config.settings import TerminalAgentSettings
         cfg = TerminalAgentSettings()
         assert cfg.command_timeout == 5
+
+    def test_env_override_timeout_long(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_AGENT_COMMAND_TIMEOUT_LONG", "900")
+        from config.settings import TerminalAgentSettings
+        cfg = TerminalAgentSettings()
+        assert cfg.command_timeout_long == 900
 
 
 # ---------------------------------------------------------------------------
@@ -1328,3 +1338,109 @@ class TestBuildSubprocessEnv:
     def test_dpkg_reconfigure_gets_debian_frontend(self):
         env = _build_subprocess_env("pkexec dpkg-reconfigure tzdata")
         assert env.get("DEBIAN_FRONTEND") == "noninteractive"
+
+
+# ===========================================================================
+# command_timeout adattivo per long-running commands
+# ===========================================================================
+
+class TestIsLongRunningCommand:
+    """Detection di comandi che meritano command_timeout_long invece di timeout."""
+
+    @pytest.mark.parametrize("cmd", [
+        # Package managers
+        "apt install vim",
+        "apt-get upgrade",
+        "apt install -y curl",
+        "sudo apt update",
+        "pkexec apt upgrade",
+        "pkexec bash -c 'apt update && apt upgrade -y'",
+        "aptitude install foo",
+        "pip install requests",
+        "pip3 install --upgrade pip",
+        "npm install",
+        "yarn add lodash",
+        "pnpm install",
+        "cargo build",
+        "cargo install --path .",
+        "cargo update",
+        "gem install bundler",
+        "brew install cmake",
+        "conda install numpy",
+        "poetry install",
+        "poetry add httpx",
+        # Container / build
+        "docker pull ubuntu",
+        "docker build -t myapp .",
+        "podman pull alpine",
+        "make",
+        "make all",
+        "make clean",         # make ⇒ long per safety: meglio aspettare più del dovuto
+        "cmake --build build",
+        # VCS / download
+        "git clone https://github.com/foo/bar.git",
+        "wget https://example.com/big.iso",
+        "curl -O https://example.com/big.iso",
+        "curl --output file.tar.gz https://example.com/x.tar.gz",
+        "curl -o file.iso https://example.com/file.iso",
+    ])
+    def test_positive(self, cmd):
+        assert _is_long_running_command(cmd) is True, f"atteso True per {cmd!r}"
+
+    @pytest.mark.parametrize("cmd", [
+        # Comandi veloci che usano lo stesso binary del pkg manager
+        "apt list --installed",
+        "apt show vim",
+        "apt search vim",
+        "pip list",
+        "pip show requests",
+        "npm ls",
+        "git status",
+        "git pull",
+        "git log -1",
+        # Download minori / introspection
+        "curl https://example.com",
+        "curl -H 'X-Foo: 1' https://example.com",
+        "curl -I https://example.com",
+        "docker ps",
+        "docker images",
+        # File system / shell base
+        "ls",
+        "ls -la",
+        "cd /tmp",
+        "cat /var/log/apt/history.log",
+        # Substring nei nomi file
+        "echo apt install",
+        "grep apt /etc/passwd",
+    ])
+    def test_negative(self, cmd):
+        assert _is_long_running_command(cmd) is False, f"atteso False per {cmd!r}"
+
+
+class TestDetectTimeoutForCommand:
+    """Selezione del timeout in base al comando."""
+
+    def test_long_running_uses_long_timeout(self):
+        assert _detect_timeout_for_command("apt install vim", 30, 600) == 600
+
+    def test_short_uses_default_timeout(self):
+        assert _detect_timeout_for_command("ls -la", 30, 600) == 30
+
+    def test_pkexec_bash_apt_uses_long(self):
+        cmd = "pkexec bash -c 'apt update && apt upgrade -y'"
+        assert _detect_timeout_for_command(cmd, 30, 600) == 600
+
+    def test_custom_values_respected(self):
+        # I valori passati sono usati senza modifiche, dovunque arrivino
+        assert _detect_timeout_for_command("git clone repo", 60, 900) == 900
+        assert _detect_timeout_for_command("ls", 60, 900) == 60
+
+    def test_curl_download_long(self):
+        assert _detect_timeout_for_command(
+            "curl -O https://example.com/file.iso", 30, 600
+        ) == 600
+
+    def test_curl_get_short(self):
+        assert _detect_timeout_for_command(
+            "curl https://example.com", 30, 600
+        ) == 30

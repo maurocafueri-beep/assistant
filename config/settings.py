@@ -174,8 +174,15 @@ class TerminalAgentSettings(BaseSettings):
             return [f.strip() for f in v.split(",") if f.strip()]
         return v
 
-    # Esecuzione comando
-    command_timeout: int = Field(30, ge=1, le=600)
+    # Esecuzione comando.
+    # `command_timeout` è il default; `command_timeout_long` è usato per
+    # comandi riconosciuti come "long-running" (apt, pip install, npm install,
+    # docker build/pull, make, cargo, git clone, wget/curl di download...).
+    # La detection è in modules/terminal_agent.base_terminal_agent
+    # _detect_timeout_for_command(). Tutti gli altri comandi usano
+    # `command_timeout`.
+    command_timeout: int = Field(30, ge=1, le=3600)
+    command_timeout_long: int = Field(600, ge=1, le=3600)
     max_output_bytes: int = Field(64 * 1024, ge=1024)
 
     # Loop agentico (ReAct)
