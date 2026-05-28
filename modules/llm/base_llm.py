@@ -253,11 +253,19 @@ class OllamaClient:
         True solo se la richiesta è andata a buon fine.
         """
         resolved = model or _model_for_role(role)
+        # num_ctx coerente coi settings: se il warmup carica il modello con
+        # context 4K (default Ollama) e poi la prima chat reale arriva con
+        # 8K, Ollama deve ricaricare e il warmup non scalda nulla. Allineare
+        # i due rende il warmup effettivo.
+        warmup_opts: dict[str, Any] = {"num_predict": 1}
+        num_ctx = getattr(settings.ollama, "num_ctx", None)
+        if num_ctx:
+            warmup_opts["num_ctx"] = num_ctx
         payload: dict[str, Any] = {
             "model":    resolved,
             "messages": [{"role": "user", "content": "ok"}],
             "stream":   False,
-            "options":  {"num_predict": 1},
+            "options":  warmup_opts,
         }
         if keep_alive is not None:
             payload["keep_alive"] = keep_alive
@@ -371,6 +379,16 @@ class OllamaClient:
                 think = v
             else:
                 opts[k] = v
+
+        # num_ctx: default dai settings, ma il chiamante può sovrascriverlo
+        # esplicitamente passandolo in `options` (es. il map-reduce del
+        # riassunto può chiedere context più grande per chunk pesanti).
+        # Senza questo, Ollama userebbe il suo default interno di 4096 token,
+        # che è troppo basso per file analysis e conversazioni lunghe.
+        if "num_ctx" not in opts:
+            num_ctx = getattr(settings.ollama, "num_ctx", None)
+            if num_ctx:
+                opts["num_ctx"] = num_ctx
 
         msg_list: list[dict] = []
         if system and not any(m.role == Role.SYSTEM for m in messages):

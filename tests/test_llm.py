@@ -152,6 +152,43 @@ class TestBuildPayload:
         )
         assert payload["options"]["temperature"] == 0.1
 
+    def test_num_ctx_default_from_settings(self, single_user_msg):
+        """
+        Senza num_ctx esplicito nelle options, _build_payload usa il default
+        dai settings (8192). Senza questo, Ollama userebbe il suo 4096
+        interno — limite troppo basso per file analysis e chat lunghe.
+        """
+        client = OllamaClient.__new__(OllamaClient)
+        payload = client._build_payload(
+            "m", single_user_msg, None, None, False
+        )
+        assert payload["options"]["num_ctx"] == 8192
+
+    def test_num_ctx_caller_wins(self, single_user_msg):
+        """
+        Se il chiamante mette num_ctx nelle options, quello prevale sul
+        default dei settings: serve al map-reduce del riassunto per usare
+        context più grandi su singoli chunk senza ricommittare nulla.
+        """
+        client = OllamaClient.__new__(OllamaClient)
+        payload = client._build_payload(
+            "m", single_user_msg, {"num_ctx": 32768}, None, False
+        )
+        assert payload["options"]["num_ctx"] == 32768
+
+    def test_num_ctx_env_override_settings(self, single_user_msg, monkeypatch):
+        """
+        L'env OLLAMA_NUM_CTX dev'essere onorata: l'utente alza il context
+        via env, _build_payload lo propaga senza richiedere altro.
+        """
+        from config.settings import settings
+        monkeypatch.setattr(settings.ollama, "num_ctx", 24576)
+        client = OllamaClient.__new__(OllamaClient)
+        payload = client._build_payload(
+            "m", single_user_msg, None, None, False
+        )
+        assert payload["options"]["num_ctx"] == 24576
+
 
 # ---------------------------------------------------------------------------
 # OllamaClient.chat — mock httpx

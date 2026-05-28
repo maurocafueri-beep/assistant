@@ -66,6 +66,22 @@ class OllamaSettings(BaseSettings):
     # dal flag `warmup` qui sopra (master switch). Fire-and-forget: non
     # blocca la UI, il segnalino mostra lo stato "warmup" mentre scalda.
     warmup_on_switch: bool = True
+    # Context window passata a Ollama in OGNI chiamata di generazione (chat,
+    # stream, warmup). Ollama di default usa 4096 token (~16 KB di testo
+    # italiano): basso per file analysis e conversazioni lunghe, perché ogni
+    # token sopra il limite viene silenziosamente droppato dalla cronologia.
+    #
+    # Trade-off: KV cache cresce ~linearmente con num_ctx. Su VRAM stretta
+    # (es. 16 GB con un modello da 14-15 GB residente), context troppo grandi
+    # causano OOM e fallback CPU. Mitigazione raccomandata: abilitare KV cache
+    # quantizzato lato Ollama via env (`OLLAMA_FLASH_ATTENTION=1`,
+    # `OLLAMA_KV_CACHE_TYPE=q8_0`) — dimezza l'impronta del KV a parità di
+    # context, qualità impercettibilmente degradata.
+    #
+    # Default 8192 = raddoppio sicuro del default Ollama: porta il file
+    # analysis utile da ~5 pagine a ~10-15, lascia comunque margine VRAM.
+    # Aumentabile via env `OLLAMA_NUM_CTX` (16384, 32768) se la VRAM regge.
+    num_ctx: int = 8192
 
 class STTSettings(BaseSettings):
     model_config = SettingsConfigDict(

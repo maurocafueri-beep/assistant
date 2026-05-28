@@ -107,6 +107,16 @@ class TestOllamaSettings:
         s = OllamaSettings()
         assert s.base_url == "http://altro:9999"
 
+    def test_num_ctx_default(self):
+        s = OllamaSettings()
+        # Default 8192 (raddoppio sicuro del default Ollama di 4096).
+        assert s.num_ctx == 8192
+
+    def test_num_ctx_env_override(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_NUM_CTX", "16384")
+        s = OllamaSettings()
+        assert s.num_ctx == 16384
+
 
 # ===========================================================================
 # STTSettings — env_prefix=STT_, alias VAD_THRESHOLD / VAD_SILENCE_DURATION
