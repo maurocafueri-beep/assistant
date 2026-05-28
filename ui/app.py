@@ -258,6 +258,19 @@ class _AsyncWorker(QObject):
                         await ui_loop.broadcast_init()
                     except Exception as exc:
                         logger.warning("ui.app | broadcast_init: {}", exc)
+                    # Warmup modelli in background: scalda il modello chat (e
+                    # l'embedding) DOPO il ripristino del modello attivo, senza
+                    # bloccare la UI — così il primo messaggio non paga il
+                    # cold-start. Riferimento tenuto per evitare il GC del task.
+                    def _warmup_done(t: "asyncio.Task") -> None:
+                        if t.cancelled():
+                            return
+                        exc = t.exception()
+                        if exc is not None:
+                            logger.warning("ui.app | warmup task: {}", exc)
+
+                    warmup_task = asyncio.create_task(ui_loop.warmup())
+                    warmup_task.add_done_callback(_warmup_done)
                     await asyncio.gather(ui_loop.run(), server_task)
             finally:
                 # Chiudi il TerminalBridge se è stato caricato (idempotente)

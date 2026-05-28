@@ -234,6 +234,42 @@ class OllamaClient:
                 if data.get("done"):
                     break
 
+    # -- warmup ----------------------------------------------------------------
+
+    async def warmup(
+        self,
+        *,
+        model:      Optional[str]   = None,
+        role:       ModelRole       = ModelRole.CHAT,
+        keep_alive: Optional[str]   = None,
+    ) -> bool:
+        """
+        Forza Ollama a caricare il modello in memoria, così il primo turno
+        reale non paga il cold-start (caricamento pesi → VRAM/RAM).
+
+        Esegue una generazione minima da 1 token; `keep_alive` (es. "30m",
+        "-1" per residenza indefinita) estende quanto a lungo Ollama tiene
+        il modello caricato dopo il warmup. Best-effort: non solleva, ritorna
+        True solo se la richiesta è andata a buon fine.
+        """
+        resolved = model or _model_for_role(role)
+        payload: dict[str, Any] = {
+            "model":    resolved,
+            "messages": [{"role": "user", "content": "ok"}],
+            "stream":   False,
+            "options":  {"num_predict": 1},
+        }
+        if keep_alive is not None:
+            payload["keep_alive"] = keep_alive
+        try:
+            logger.debug("llm.warmup | model={} keep_alive={}", resolved, keep_alive)
+            r = await self._http.post("/api/chat", json=payload)
+            r.raise_for_status()
+            return True
+        except Exception as exc:
+            logger.warning("llm.warmup | '{}' fallito: {}", resolved, exc)
+            return False
+
     # -- vision ----------------------------------------------------------------
 
     async def vision(
@@ -274,7 +310,13 @@ class OllamaClient:
         logger.debug("llm.embed | model={} n={}", resolved, len(texts))
 
         # /api/embed — Ollama >= 0.3 (accetta lista)
-        r = await self._http.post("/api/embed", json={"model": resolved, "input": texts})
+        # keep_alive: tiene residente anche il modello di embedding (usato dal
+        # RAG memoria PRIMA dell'LLM a ogni turno), evitando il suo cold-start.
+        embed_payload: dict[str, Any] = {"model": resolved, "input": texts}
+        ka = self._keep_alive()
+        if ka is not None:
+            embed_payload["keep_alive"] = ka
+        r = await self._http.post("/api/embed", json=embed_payload)
 
         if r.status_code == 404:
             # fallback Ollama < 0.3 — /api/embeddings, un testo alla volta
@@ -292,6 +334,25 @@ class OllamaClient:
         return data.get("embeddings") or [data["embedding"]]
 
     # -- interno ---------------------------------------------------------------
+
+    @staticmethod
+    def _keep_alive() -> Optional[str]:
+        """
+        Durata `keep_alive` da applicare a OGNI richiesta di
+        generazione/embedding, così Ollama tiene il modello residente tra un
+        turno e l'altro.
+
+        Senza questo, dopo ogni risposta Ollama riparte dal default (5 min):
+        basta una pausa perché il modello venga scaricato e il messaggio
+        successivo paghi di nuovo il cold-start (caricamento pesi in VRAM/RAM)
+        — la causa principale delle risposte "a volte lente". Riusa la stessa
+        durata del warmup d'avvio per un comportamento coerente; gated sul
+        flag `warmup` così resta disattivabile. Ritorna None se non applicabile.
+        """
+        if not getattr(settings.ollama, "warmup", True):
+            return None
+        ka = getattr(settings.ollama, "warmup_keep_alive", None)
+        return ka or None
 
     def _build_payload(
         self,
@@ -316,10 +377,14 @@ class OllamaClient:
             msg_list.append({"role": "system", "content": system})
         msg_list.extend(m.to_dict() for m in messages)
 
-        return {
+        payload: dict[str, Any] = {
             "model":    model,
             "messages": msg_list,
             "stream":   stream,
             "think":    think,   # top level — unico modo funzionante
             "options":  opts,
         }
+        ka = self._keep_alive()
+        if ka is not None:
+            payload["keep_alive"] = ka
+        return payload
