@@ -44,6 +44,7 @@ from modules.terminal_agent.base_terminal_agent import (
     _extract_cwd,
     _extract_json,
     _first_word,
+    _inject_noninteractive_apt,
     _is_inside,
     _is_long_running_command,
     _second_word,
@@ -1338,6 +1339,62 @@ class TestBuildSubprocessEnv:
     def test_dpkg_reconfigure_gets_debian_frontend(self):
         env = _build_subprocess_env("pkexec dpkg-reconfigure tzdata")
         assert env.get("DEBIAN_FRONTEND") == "noninteractive"
+
+
+class TestInjectNoninteractiveApt:
+    """
+    Iniezione di `env DEBIAN_FRONTEND=...` dentro il comando dopo pkexec/sudo.
+    Necessaria perché pkexec/sudo resettano l'ambiente: l'env del subprocess
+    non raggiunge il vero processo apt eseguito come root.
+    """
+
+    def test_pkexec_bash_c(self):
+        out = _inject_noninteractive_apt(
+            "pkexec bash -c 'apt update && apt upgrade -y'"
+        )
+        assert out == (
+            "pkexec env DEBIAN_FRONTEND=noninteractive "
+            "DEBCONF_NONINTERACTIVE_SEEN=true "
+            "bash -c 'apt update && apt upgrade -y'"
+        )
+
+    def test_pkexec_direct_apt(self):
+        out = _inject_noninteractive_apt("pkexec apt-get install -y curl")
+        assert out == (
+            "pkexec env DEBIAN_FRONTEND=noninteractive "
+            "DEBCONF_NONINTERACTIVE_SEEN=true apt-get install -y curl"
+        )
+
+    def test_sudo_apt(self):
+        out = _inject_noninteractive_apt("sudo apt upgrade")
+        assert out.startswith("sudo env DEBIAN_FRONTEND=noninteractive ")
+        assert out.endswith(" apt upgrade")
+
+    def test_no_wrapper_unchanged(self):
+        # Senza pkexec/sudo basta l'env del subprocess: nessuna iniezione.
+        cmd = "apt update && apt upgrade -y"
+        assert _inject_noninteractive_apt(cmd) == cmd
+
+    def test_non_apt_with_pkexec_unchanged(self):
+        cmd = "pkexec systemctl restart nginx"
+        assert _inject_noninteractive_apt(cmd) == cmd
+
+    def test_plain_command_unchanged(self):
+        cmd = "ls -la /etc/apt"
+        assert _inject_noninteractive_apt(cmd) == cmd
+
+    def test_idempotent(self):
+        once  = _inject_noninteractive_apt("pkexec apt update")
+        twice = _inject_noninteractive_apt(once)
+        assert once == twice
+        # un solo `env DEBIAN_FRONTEND=` iniettato
+        assert twice.count("DEBIAN_FRONTEND=") == 1
+
+    def test_injected_form_is_runnable_shape(self):
+        # La forma deve restare `pkexec env VAR=val <resto>`: env subito
+        # dopo il wrapper, poi il comando originale.
+        out = _inject_noninteractive_apt("pkexec apt update")
+        assert out.split()[:2] == ["pkexec", "env"]
 
 
 # ===========================================================================

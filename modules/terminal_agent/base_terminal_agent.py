@@ -479,6 +479,62 @@ def _build_subprocess_env(cmd: str) -> dict[str, str]:
     return env
 
 
+# Assegnamenti da iniettare nel comando per rendere apt/debconf non interattivi.
+_NONINTERACTIVE_ENV_ASSIGNMENTS = (
+    "DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true"
+)
+
+# Wrapper di privilegio dopo cui iniettare `env VAR=val ...`.
+# pkexec e sudo RESETTANO l'ambiente nel passaggio a root, quindi le variabili
+# impostate sull'ambiente del subprocess (vedi _build_subprocess_env) NON
+# attraversano il confine di privilegio: raggiungono il wrapper, non il vero
+# processo apt eseguito come root. Vanno reimpostate DENTRO il comando.
+_PRIV_WRAPPER_RE = re.compile(r"\b(?:pkexec|sudo)\b")
+
+
+def _inject_noninteractive_apt(cmd: str) -> str:
+    """
+    Se il comando lancia apt/dpkg-reconfigure dietro pkexec/sudo, inserisce
+    ``env DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true``
+    subito dopo il wrapper di privilegio. Restituisce il comando invariato
+    quando non serve.
+
+    Perché serve OLTRE a _build_subprocess_env: pkexec/sudo sanificano
+    l'ambiente nel passaggio a root, quindi le variabili sull'ambiente del
+    subprocess arrivano solo al wrapper. ``env VAR=val`` le reimposta
+    nell'ambiente del processo root, dove debconf le legge davvero — senza
+    questo, in contesto GUI senza TTY debconf prova in cascata Dialog →
+    Readline → Teletype e fallisce (dpkg-preconfigure: impossibile riaprire
+    stdin), stampando warning a ogni apt sotto pkexec.
+
+    Casi:
+      pkexec bash -c 'apt ...'  → pkexec env VAR=val bash -c 'apt ...'
+      pkexec apt update         → pkexec env VAR=val apt update
+      apt update                → invariato (nessun wrapper: basta l'env del
+                                  subprocess)
+      pkexec systemctl restart  → invariato (non è apt)
+
+    Idempotente: se dopo il wrapper c'è già ``env DEBIAN_FRONTEND=`` non
+    duplica (sicuro su retry o ri-wrap).
+    """
+    if not _command_needs_noninteractive_apt(cmd):
+        return cmd
+    m = _PRIV_WRAPPER_RE.search(cmd)
+    if m is None:
+        # Nessun wrapper di privilegio: l'ambiente del subprocess
+        # (_build_subprocess_env) raggiunge già apt. Niente da iniettare.
+        return cmd
+    insert_at = m.end()
+    # Idempotenza: già iniettato subito dopo il wrapper?
+    tail = cmd[insert_at:].lstrip()
+    if tail.startswith("env ") and "DEBIAN_FRONTEND=" in tail[:120]:
+        return cmd
+    return (
+        f"{cmd[:insert_at]} env {_NONINTERACTIVE_ENV_ASSIGNMENTS}"
+        f"{cmd[insert_at:]}"
+    )
+
+
 # Regex per riconoscere comandi long-running che meritano un timeout esteso.
 # Pattern matchato:
 #   - all'inizio o dopo un separatore shell (; & | && ||)
@@ -1245,7 +1301,13 @@ class TerminalAgent:
             )
 
         cwd_before = self._cwd
-        wrapped    = _wrap_command_with_cwd_tracking(proposal.command)
+        # Iniezione DEBIAN_FRONTEND=noninteractive DENTRO il comando quando apt
+        # gira dietro pkexec/sudo: l'ambiente del subprocess non attraversa il
+        # confine di privilegio (vedi _inject_noninteractive_apt). Il comando
+        # mostrato/loggato (proposal.command) resta quello pulito; qui agiamo
+        # solo sulla forma effettivamente eseguita, com'è già per il wrapping cwd.
+        exec_command = _inject_noninteractive_apt(proposal.command)
+        wrapped    = _wrap_command_with_cwd_tracking(exec_command)
 
         t0 = time.monotonic()
         try:
