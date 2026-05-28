@@ -71,6 +71,9 @@ class UIBridge(VoiceLoop):
         # Le primitive STT/TTS restano caricate (PTT continua a funzionare).
         self._mode: str = "chat"
         self._terminal_bridge = None   # set da app.py: TerminalBridge instance
+        # Stato del TTS prima di entrare in terminale, per ripristinarlo al
+        # ritorno in chat (in terminale la voce è forzata OFF).
+        self._tts_before_terminal: bool | None = None
 
         # Task fire-and-forget di _emit: vanno tenuti referenziati finché
         # non completano, altrimenti l'event loop ne tiene solo una weak
@@ -88,15 +91,31 @@ class UIBridge(VoiceLoop):
     async def set_mode(self, mode: str) -> bool:
         """
         Cambia modalità globale ('chat' | 'terminal'). Broadcast WS.
-        In modalità terminale il TTS è forzato OFF (regola di sicurezza
-        non bypassabile da set_tts_enabled), per restituire alla shell
-        un comportamento prevedibile.
+
+        In modalità terminale la voce viene forzata OFF (shell con
+        comportamento prevedibile): se l'assistente sta parlando, la
+        riproduzione viene tagliata all'istante. Tornando in chat lo stato
+        precedente del TTS viene ripristinato, così l'utente non deve
+        riattivare la voce manualmente ogni volta.
         """
         if mode not in ("chat", "terminal"):
             return False
         if mode == self._mode:
             return True
         self._mode = mode
+
+        if mode == "terminal":
+            # Ricorda lo stato voce per ripristinarlo al ritorno in chat e
+            # zittisci subito (set_tts_enabled taglia anche l'audio in corso).
+            self._tts_before_terminal = self._tts_enabled
+            if self._tts_enabled:
+                self.set_tts_enabled(False)
+        else:  # chat
+            prev = getattr(self, "_tts_before_terminal", None)
+            if prev:
+                self.set_tts_enabled(True)
+            self._tts_before_terminal = None
+
         # Notifica subito la UI così cambia interfaccia
         self._emit({"type": "mode", "mode": mode})
         logger.info("ui.bridge | mode → {}", mode)
@@ -280,6 +299,46 @@ class UIBridge(VoiceLoop):
         except Exception as e:
             logger.error("ui.bridge | switch_model: {}", e); return False
 
+    # ── Warmup scheduling (fire-and-forget) ──────────────────────────
+    # Lo switch di modello/modalità non deve bloccare la UI: l'override del
+    # modello vale comunque dal turno successivo. Qui lanciamo il warmup
+    # mirato in background, con segnalino "warmup", e teniamo il task
+    # referenziato (come _emit) per evitare il GC a metà esecuzione.
+    def _spawn(self, coro) -> None:
+        try:
+            t = asyncio.get_running_loop().create_task(coro)
+        except RuntimeError:
+            # Nessun event loop in esecuzione: niente da schedulare.
+            try:
+                coro.close()
+            except Exception:
+                pass
+            return
+        self._bg_tasks.add(t)
+        t.add_done_callback(self._bg_tasks.discard)
+
+    def schedule_warmup(self, model: str, *, include_tts: bool = False) -> None:
+        """Warmup mirato del modello indicato, in background. No-op se vuoto."""
+        if not model:
+            return
+        self._spawn(self.warmup_switch(model, include_tts=include_tts))
+
+    def schedule_mode_warmup(self) -> None:
+        """
+        Warmup del modello rilevante per la modalità CORRENTE (da chiamare
+        dopo set_mode): in 'terminal' è il modello del TerminalBridge, in
+        'chat' è il modello chat attivo dell'orchestratore. Il TTS NON viene
+        riscaldato qui (il suo warmup è una preoccupazione d'avvio): in
+        terminale la voce è forzata OFF, in chat il modello TTS è già
+        residente dal boot.
+        """
+        if self._mode == "terminal":
+            model = getattr(self._terminal_bridge, "current_model", None) \
+                if self._terminal_bridge is not None else None
+        else:
+            model = self.active_model
+        self.schedule_warmup(model)
+
     # ── Voice ───────────────────────────────────────────────────────────
     async def list_voices(self) -> list[str]:
         # Durante l'avvio lazy il TTS può non essere ancora pronto:
@@ -354,11 +413,21 @@ class UIBridge(VoiceLoop):
     # ── TTS on/off ───────────────────────────────────────────────────
     def set_tts_enabled(self, enabled: bool) -> bool:
         """
-        Attiva/disattiva la sintesi vocale per i turni successivi.
+        Attiva/disattiva la sintesi vocale.
         La chat testuale con l'LLM continua a funzionare in entrambi i casi.
+
+        Se viene disattivata MENTRE l'assistente sta parlando, la voce viene
+        zittita all'istante (riproduzione corrente tagliata + audio in coda
+        scartato), senza interrompere lo streaming del testo — come ci si
+        aspetta da un pulsante "muta".
+
         Notifica la UI via WebSocket. Ritorna sempre True (operazione locale).
         """
+        was_enabled = self._tts_enabled
         self._tts_enabled = bool(enabled)
+        # Mute durante il parlato: taglia subito l'audio in corso/in coda.
+        if was_enabled and not self._tts_enabled:
+            self.interrupt_tts()
         self._emit({"type": "tts", "enabled": self._tts_enabled})
         logger.info("ui.bridge | TTS {}", "attivo" if self._tts_enabled else "disattivato")
         return True

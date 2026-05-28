@@ -597,3 +597,37 @@ class TestOrchestratorIntegration:
             ctx2 = make_ctx(user_text="Come mi chiamo?", session_id="integ")
             result = await orch.turn_sync(ctx2)
             assert result.assistant_text
+
+
+# ---------------------------------------------------------------------------
+# Warmup mirato per nome (usato dagli switch a runtime)
+# ---------------------------------------------------------------------------
+
+class TestWarmupModel:
+    async def test_warmup_model_ok(self, orch):
+        orch._llm.warmup = AsyncMock(return_value=True)
+        ok = await orch.warmup_model("qwen3:14b-q8_0", keep_alive="30m")
+        assert ok is True
+        orch._llm.warmup.assert_awaited_once()
+        _, kwargs = orch._llm.warmup.call_args
+        assert kwargs.get("model") == "qwen3:14b-q8_0"
+        assert kwargs.get("keep_alive") == "30m"
+
+    async def test_warmup_model_default_keep_alive(self, orch):
+        from config.settings import settings
+        orch._llm.warmup = AsyncMock(return_value=True)
+        await orch.warmup_model("some:model")
+        _, kwargs = orch._llm.warmup.call_args
+        # Senza keep_alive esplicito usa il default da settings.
+        assert kwargs.get("keep_alive") == settings.ollama.warmup_keep_alive
+
+    async def test_warmup_model_failure_is_soft(self, orch):
+        orch._llm.warmup = AsyncMock(side_effect=RuntimeError("ollama down"))
+        ok = await orch.warmup_model("whatever")  # non deve sollevare
+        assert ok is False
+
+    async def test_warmup_model_empty_name_noop(self, orch):
+        orch._llm.warmup = AsyncMock(return_value=True)
+        ok = await orch.warmup_model("")
+        assert ok is False
+        orch._llm.warmup.assert_not_awaited()

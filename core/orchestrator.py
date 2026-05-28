@@ -557,6 +557,82 @@ class Orchestrator:
         self._tts = tts
         logger.debug("orchestrator | TTS caricato")
 
+    async def warmup(self, *, keep_alive: Optional[str] = None) -> None:
+        """
+        Pre-carica i modelli Ollama per azzerare il cold-start del primo turno:
+          1. modello chat attivo (caricamento pesi in VRAM/RAM);
+          2. modello di embedding (usato dal RAG memoria PRIMA dell'LLM a ogni
+             turno) — solo se la memoria è disponibile.
+
+        Pensato per girare in background all'avvio: ogni passo è best-effort e
+        non solleva mai, così non può rompere lo startup.
+        """
+        if not self._loaded or self._llm is None:
+            return
+        ka = keep_alive if keep_alive is not None else getattr(
+            settings.ollama, "warmup_keep_alive", None
+        )
+
+        # 1. Modello chat attivo
+        t0 = time.monotonic()
+        model = self.active_model(ModelRole.CHAT)
+        try:
+            ok = await self._llm.warmup(model=model, keep_alive=ka)
+        except Exception as exc:
+            ok = False
+            logger.warning("orchestrator.warmup | chat '{}' eccezione: {}", model, exc)
+        logger.info(
+            "orchestrator.warmup | chat '{}' {} ({:.0f}ms)",
+            model, "✓" if ok else "✗", (time.monotonic() - t0) * 1000,
+        )
+
+        # 2. Embedding (solo se il RAG memoria è attivo)
+        if self._memory is not None:
+            t1 = time.monotonic()
+            try:
+                await self._llm.embed(["warmup"])
+                logger.info(
+                    "orchestrator.warmup | embed '{}' ✓ ({:.0f}ms)",
+                    settings.ollama.embed_model, (time.monotonic() - t1) * 1000,
+                )
+            except Exception as exc:
+                logger.warning("orchestrator.warmup | embed fallito: {}", exc)
+
+    async def warmup_model(
+        self,
+        model: str,
+        *,
+        keep_alive: Optional[str] = None,
+    ) -> bool:
+        """
+        Warmup mirato di UN modello specifico per nome (non l'embedding).
+
+        Usato dagli switch a runtime (cambio modello dalla tendina chat o
+        terminale, cambio modalità chat↔terminale): il warmup di Ollama è
+        globale al daemon e indicizzato sul nome del modello, quindi questo
+        metodo scalda qualunque modello — incluso quello del terminale —
+        riusando l'unico OllamaClient.
+
+        Best-effort: non solleva mai. Ritorna True solo se la richiesta è
+        andata a buon fine.
+        """
+        if not self._loaded or self._llm is None or not model:
+            return False
+        ka = keep_alive if keep_alive is not None else getattr(
+            settings.ollama, "warmup_keep_alive", None
+        )
+        t0 = time.monotonic()
+        try:
+            ok = await self._llm.warmup(model=model, keep_alive=ka)
+        except Exception as exc:
+            ok = False
+            logger.warning("orchestrator.warmup_model | '{}' eccezione: {}", model, exc)
+        logger.info(
+            "orchestrator.warmup_model | '{}' {} ({:.0f}ms)",
+            model, "✓" if ok else "✗", (time.monotonic() - t0) * 1000,
+        )
+        return ok
+
     # -----------------------------------------------------------------------
     # API pubblica
     # -----------------------------------------------------------------------
@@ -628,11 +704,23 @@ class Orchestrator:
             ctx.error = f"LLM error: {exc}"
             logger.error("orchestrator.turn | LLM fallito: {}", exc)
             return
-
-        ctx.assistant_text = full_text
-
-        # 7. Aggiorna conversation history (finestra scorrevole)
-        self._update_history(ctx)
+        finally:
+            # Eseguito su ogni uscita dal blocco, inclusa la cancellazione:
+            #  - fine naturale dello stream;
+            #  - GeneratorExit (consumer che chiude il generatore tra un chunk
+            #    e l'altro);
+            #  - CancelledError (chunk annullato mentre si attendeva il token).
+            # In tutti i casi il parziale entra nella finestra conversazionale,
+            # così il turno successivo resta coerente anche dopo uno stop —
+            # esattamente come fanno Claude/Gemini. _update_history è sincrono,
+            # quindi è sicuro anche durante l'unwinding di GeneratorExit.
+            # Memoria e TTS restano fuori dal try: su cancel vengono saltati.
+            ctx.assistant_text = full_text
+            if full_text.strip():
+                try:
+                    self._update_history(ctx)
+                except Exception as exc:
+                    logger.warning("orchestrator.turn | update_history: {}", exc)
 
         # 8. Salvataggio in memoria
         await self._save_turn_to_memory(ctx)

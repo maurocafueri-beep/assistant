@@ -79,6 +79,20 @@ async def _main(personality: str | None, ptt_key: str, open_browser: bool) -> No
         })
         logger.info("run_ui | assistente pronto | PTT={}", ptt_key)
 
+        # Warmup modelli (chat + embed) e TTS in background: scalda DOPO che
+        # l'assistente è pronto, senza bloccare il loop. Il segnalino mostra
+        # lo stato "warmup" mentre scalda. Riferimento tenuto per evitare il
+        # GC del task. Best-effort (warmup() non solleva mai).
+        def _warmup_done(t: "asyncio.Task") -> None:
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                logger.warning("run_ui | warmup task: {}", exc)
+
+        warmup_task = asyncio.create_task(ui_loop.warmup())
+        warmup_task.add_done_callback(_warmup_done)
+
         # ── 3. Loop PTT + server in parallelo ─────────────────────────────
         try:
             await asyncio.gather(ui_loop.run(), server_task)

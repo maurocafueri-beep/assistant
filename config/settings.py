@@ -54,6 +54,18 @@ class OllamaSettings(BaseSettings):
     vision_model: str = "qwen3-vl:8b"
     embed_model: str = "nomic-embed-text"
     timeout: int = 120
+    # Warmup: pre-carica in memoria il modello chat (+ embedding) all'avvio
+    # per azzerare il cold-start sul primo messaggio. warmup_keep_alive è il
+    # keep_alive passato a Ollama in fase di warmup (es. "30m", "-1" per
+    # tenerlo residente a tempo indefinito); copre il gap avvio→primo turno.
+    warmup: bool = True
+    warmup_keep_alive: str = "30m"
+    # Se True, ogni cambio di modello (tendina chat/terminale) o di modalità
+    # (chat↔terminale) innesca un warmup mirato del modello di destinazione,
+    # così la prima risposta dopo lo switch non parte a freddo. Gated anche
+    # dal flag `warmup` qui sopra (master switch). Fire-and-forget: non
+    # blocca la UI, il segnalino mostra lo stato "warmup" mentre scalda.
+    warmup_on_switch: bool = True
 
 class STTSettings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -83,6 +95,11 @@ class TTSSettings(BaseSettings):
     cuda_device_index: int = Field(1, alias="TTS_CUDA_DEVICE")
     model_size: Literal["0.6B", "1.7B"] = Field("1.7B", alias="TTS_MODEL_SIZE")
     model_type: Literal["Base", "CustomVoice", "VoiceDesign"] = Field("Base", alias="TTS_MODEL_TYPE")
+    # Warmup TTS all'avvio dell'app: il server carica già i pesi in VRAM al
+    # boot (atteso da _wait_for_server), ma la PRIMA inferenza paga comunque
+    # il costo dei kernel CUDA/autotuning. Una sintesi usa-e-getta dopo il
+    # boot toglie questo costo dalla prima risposta reale. Best-effort.
+    warmup: bool = True
 
 class SpeakerSettings(BaseSettings):
     model_config = SettingsConfigDict(

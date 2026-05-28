@@ -201,6 +201,28 @@ def create_app(ws_manager: "WSManager") -> tuple[FastAPI, dict]:
         if loop is None: return JSONResponse({"ok":False,"error":"loop non pronto"},status_code=503)
         await loop.send_text(body.text); return JSONResponse({"ok":True})
 
+    @app.post("/api/cancel")
+    async def cancel():
+        """
+        Interrompe la generazione LLM del turno in corso (tasto stop della
+        chat, come su Claude/Gemini). Cooperativo: tronca lo stream, chiude
+        la connessione verso Ollama e conserva il testo già prodotto.
+        Ritorna {"ok": True, "cancelled": <bool>} — cancelled=False se non
+        c'era nulla da interrompere.
+        """
+        loop = state["loop"]
+        if loop is None: return JSONResponse({"ok":False,"error":"loop non pronto"},status_code=503)
+        cancelled = loop.cancel_generation()
+        return JSONResponse({"ok":True,"cancelled":cancelled})
+
+    # Alias storico: alcune build della UI usano /api/stop come fallback.
+    @app.post("/api/stop")
+    async def stop_alias():
+        loop = state["loop"]
+        if loop is None: return JSONResponse({"ok":False,"error":"loop non pronto"},status_code=503)
+        cancelled = loop.cancel_generation()
+        return JSONResponse({"ok":True,"cancelled":cancelled})
+
     @app.post("/api/uploads")
     async def uploads(file: UploadFile = File(...)):
         """
@@ -383,6 +405,8 @@ def create_app(ws_manager: "WSManager") -> tuple[FastAPI, dict]:
         ok = loop.switch_model(body.name)
         if not ok: return JSONResponse({"ok":False,"error":f"modello non valido"},status_code=400)
         _save_ui_settings({"model": body.name})
+        # Warmup mirato del nuovo modello chat (fire-and-forget, segnalino).
+        loop.schedule_warmup(body.name)
         return JSONResponse({"ok":True,"name":body.name})
 
     @app.post("/api/personality")
@@ -423,6 +447,9 @@ def create_app(ws_manager: "WSManager") -> tuple[FastAPI, dict]:
         ok = await loop.set_mode(body.mode)
         if not ok: return JSONResponse({"ok":False},status_code=400)
         _save_ui_settings({"mode": body.mode})
+        # Warmup del modello della modalità di destinazione (terminale→suo
+        # modello, chat→modello chat attivo). Fire-and-forget, con segnalino.
+        loop.schedule_mode_warmup()
         return JSONResponse({"ok":True,"mode":body.mode})
 
     # ── Terminal endpoints ───────────────────────────────────────────
@@ -518,6 +545,12 @@ def create_app(ws_manager: "WSManager") -> tuple[FastAPI, dict]:
         ok = await term.switch_model(body.name)
         if not ok: return JSONResponse({"ok":False,"error":"modello non valido o nascosto"},status_code=400)
         _save_ui_settings({"terminal_model": body.name})
+        # Warmup del nuovo modello terminale: il warmup di Ollama è globale
+        # al daemon, quindi lo inneschiamo tramite il loop chat (unico
+        # OllamaClient). Fire-and-forget, con segnalino.
+        loop = state["loop"]
+        if loop is not None:
+            loop.schedule_warmup(body.name)
         return JSONResponse({"ok":True,"name":body.name})
 
     @app.post("/api/terminal/models/visibility")

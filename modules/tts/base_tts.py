@@ -169,12 +169,12 @@ def _write_wav(path: Path, wav_bytes: bytes) -> None:
     path.write_bytes(wav_bytes)
 
 
-def _play_sync(wav_bytes: bytes, device: Optional[int], blocking: bool) -> None:
+def _start_playback(wav_bytes: bytes, device: Optional[int]) -> None:
+    """Avvia la riproduzione NON bloccante (la durata gira sul thread interno
+    di PortAudio). L'attesa/interruzione è gestita in modo asincrono da play()."""
     import sounddevice as sd
     audio_f32 = _wav_bytes_to_float32(wav_bytes)
-    sd.play(audio_f32, samplerate=OUTPUT_SAMPLE_RATE, device=device, blocking=blocking)
-    if blocking:
-        sd.wait()
+    sd.play(audio_f32, samplerate=OUTPUT_SAMPLE_RATE, device=device)
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +351,32 @@ class Qwen3TTS:
         logger.info("tts | '{:.60s}' → {:.1f}s audio ({:.0f} ms)", text, duration_s, inference_ms)
         return result
 
+    # -- warmup ----------------------------------------------------------------
+
+    async def warmup(self, *, text: str = "ok") -> bool:
+        """
+        Prima inferenza usa-e-getta per pagare a vuoto il costo della prima
+        sintesi (compilazione kernel CUDA / autotuning), così la prima
+        risposta reale non lo sconta.
+
+        Il server carica già i pesi in VRAM al boot (atteso da
+        _wait_for_server in _ensure_server), quindi qui NON ricarichiamo il
+        modello: facciamo solo una synth minima e scartiamo l'audio.
+
+        Best-effort: non solleva mai, ritorna True solo se la sintesi è
+        andata a buon fine. No-op se il client non è inizializzato.
+        """
+        if self._http is None:
+            return False
+        try:
+            t0 = time.perf_counter()
+            await self.synthesize(text)
+            logger.info("tts | warmup ✓ ({:.0f}ms)", (time.perf_counter() - t0) * 1000)
+            return True
+        except Exception as exc:
+            logger.warning("tts | warmup fallito: {} — continuo", exc)
+            return False
+
     # -- streaming (callback) --------------------------------------------------
 
     async def stream_sentences(
@@ -433,23 +459,85 @@ class Qwen3TTS:
 
     # -- riproduzione ----------------------------------------------------------
 
+    # Intervallo di polling dell'attesa asincrona (s). Compromesso tra
+    # reattività dello stop (≤~30ms) e carico CPU trascurabile.
+    _PLAY_POLL_S = 0.03
+
     async def play(
         self,
         audio_bytes: bytes,
         *,
         device_index: Optional[int] = None,
-        blocking:     bool = True,
     ) -> None:
+        """
+        Riproduce un blocco WAV attendendo in modo ASINCRONO e INTERROMPIBILE.
+
+        A differenza di un sd.play(blocking=True) in un thread, qui l'avvio è
+        non bloccante e l'attesa è un polling su asyncio.sleep: questo
+        garantisce che
+          • la riproduzione si possa fermare all'istante (stop_playback →
+            sd.stop()), e
+          • il task che ci attende sia cancellabile davvero (la cancellazione
+            colpisce asyncio.sleep, non resta intrappolata in un sd.wait()
+            bloccante dentro un executor).
+
+        Tutte le chiamate sounddevice avvengono sul thread dell'event loop:
+        niente accesso cross-thread allo stream → niente deadlock con PortAudio.
+        Ritorna quando la riproduzione è finita o è stata interrotta.
+        """
         if not audio_bytes:
             return
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, lambda: _play_sync(audio_bytes, device_index, blocking))
+        import sounddevice as sd
+        try:
+            _start_playback(audio_bytes, device_index)
+        except Exception as exc:
+            logger.warning("tts | avvio play fallito: {}", exc)
+            return
+        try:
+            while True:
+                # get_stream() solleva RuntimeError se non è mai partito nulla;
+                # l'accesso a .active solleva PortAudioError su uno stream già
+                # chiuso — è il caso del mute, dove interrupt_tts → stop_playback
+                # chiama sd.stop() (che ferma E chiude lo stream) mentre questo
+                # loop sta ancora attendendo. In tutti questi casi la
+                # riproduzione è di fatto terminata: esci pulito senza loggare
+                # un falso "play() fallito".
+                try:
+                    stream = sd.get_stream()
+                    active = stream is not None and stream.active
+                except Exception:
+                    break
+                if not active:
+                    break
+                await asyncio.sleep(self._PLAY_POLL_S)
+        except asyncio.CancelledError:
+            # Cancellazione del task (es. stop generazione): taglia l'audio.
+            try:
+                sd.stop()
+            except Exception:
+                pass
+            raise
 
     async def say(self, text: str, *, language: Optional[str] = None) -> TTSResult:
         """Shortcut: sintetizza e riproduce immediatamente."""
         result = await self.synthesize(text, language=language)
         await self.play(result.audio_bytes)
         return result
+
+    async def stop_playback(self) -> None:
+        """
+        Interrompe immediatamente la riproduzione audio in corso.
+
+        Va invocato dal thread dell'event loop (come fa interrupt_tts): chiama
+        sd.stop() in modo sincrono — stessa thread di play() — azzerando lo
+        stream. Il loop di attesa di play() vede subito stream.active == False
+        e ritorna. No-op se non c'è nulla in riproduzione.
+        """
+        import sounddevice as sd
+        try:
+            sd.stop()
+        except Exception as exc:
+            logger.warning("tts | stop_playback fallito: {}", exc)
 
     # -- info ------------------------------------------------------------------
 

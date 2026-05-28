@@ -72,6 +72,7 @@ class LoopState:
     RECORDING = "recording"
     THINKING  = "thinking"
     SPEAKING  = "speaking"
+    WARMUP    = "warmup"
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +223,19 @@ class VoiceLoop:
         self._last_llm_ms:        float          = 0.0   # TTFT: start → primo chunk
         self._last_tts_ms:        float          = 0.0   # primo synth → primo audio
         self._stop_event:         asyncio.Event  = asyncio.Event()
+        # Serializza i warmup (avvio + switch) così non si sovrappongono e
+        # non sporcano il segnalino con transizioni concorrenti.
+        self._warmup_lock:        asyncio.Lock   = asyncio.Lock()
+        # Cancellazione del singolo turno (stop dell'output LLM senza
+        # spegnere il loop). Settato da cancel_generation(), consumato e
+        # ripulito da _stream_and_speak a ogni turno.
+        self._cancel_event:       asyncio.Event  = asyncio.Event()
+        # Coda audio del turno in corso (riferimento usato da interrupt_tts
+        # per scartare il pendente quando si muta il TTS mentre parla).
+        self._active_audio_queue: Optional[asyncio.Queue] = None
+        # Task fire-and-forget per fermare la riproduzione: tenuti referenziati
+        # finché non completano (altrimenti l'event loop li può GC-are).
+        self._audio_tasks:        set            = set()
         self._turn_queue:         asyncio.Queue  = asyncio.Queue(maxsize=1)
         self._stats:              VoiceLoopStats = VoiceLoopStats()
         self._loaded:             bool           = False
@@ -279,6 +293,112 @@ class VoiceLoop:
         )
         self._print_status(elapsed)
 
+    async def warmup(self) -> None:
+        """
+        Warmup d'avvio: scalda il modello chat attivo + l'embedding + il TTS,
+        mostrando lo stato "warmup" sul segnalino. Pensato per girare in
+        background dopo load(). Gated su settings.ollama.warmup; best-effort
+        (non solleva mai). Serializzato da _warmup_lock.
+        """
+        if not getattr(settings.ollama, "warmup", True):
+            logger.debug("voice_loop | warmup disabilitato da settings")
+            return
+        await self._do_warmup(models=None, embed=True, include_tts=True)
+
+    async def warmup_switch(self, model: str, *, include_tts: bool = False) -> None:
+        """
+        Warmup mirato dopo uno switch a runtime (cambio modello dalla tendina
+        chat/terminale, oppure cambio modalità chat↔terminale).
+
+        Scalda SOLO il modello di destinazione `model` (l'override vale dal
+        turno successivo, quindi questo non deve bloccare nulla: il chiamante
+        lo lancia fire-and-forget). Il segnalino mostra "warmup" mentre scalda
+        e torna allo stato precedente alla fine.
+
+        Gated su settings.ollama.warmup (master) E warmup_on_switch.
+        Best-effort: non solleva mai. Serializzato da _warmup_lock.
+        """
+        if not getattr(settings.ollama, "warmup", True):
+            return
+        if not getattr(settings.ollama, "warmup_on_switch", True):
+            return
+        if not model:
+            return
+        await self._do_warmup(models=[model], embed=False, include_tts=include_tts)
+
+    async def _do_warmup(
+        self,
+        *,
+        models:      Optional[list[str]],
+        embed:       bool,
+        include_tts: bool,
+    ) -> None:
+        """
+        Primitiva comune di warmup con segnalino.
+
+        - models=None → scalda il modello chat attivo + embed via
+          Orchestrator.warmup() (caso d'avvio).
+        - models=[...] → scalda per nome i modelli indicati via
+          Orchestrator.warmup_model() (caso switch).
+
+        Imposta lo stato "warmup" all'inizio e lo ripristina alla fine SOLO
+        se nel frattempo non è cambiato (per non calpestare un turno che
+        l'utente abbia avviato durante il warmup). Mai solleva.
+        """
+        if self._orch is None:
+            return
+        async with self._warmup_lock:
+            prev = self._state
+            self._set_state(LoopState.WARMUP)
+            try:
+                if models is None:
+                    # Avvio: modello chat attivo + embedding (gestiti dall'orch).
+                    await self._orch.warmup()
+                else:
+                    ka = getattr(settings.ollama, "warmup_keep_alive", None)
+                    for m in models:
+                        await self._orch.warmup_model(m, keep_alive=ka)
+                    if embed and self._orch._memory is not None:
+                        try:
+                            await self._orch._llm.embed(["warmup"])
+                        except Exception as exc:
+                            logger.warning("voice_loop | warmup embed: {}", exc)
+                if include_tts:
+                    await self._warmup_tts()
+            except Exception as exc:
+                logger.warning("voice_loop | warmup fallito: {}", exc)
+            finally:
+                self._restore_state_after_warmup(prev)
+
+    async def _warmup_tts(self) -> None:
+        """
+        Warmup del TTS (prima inferenza usa-e-getta). Gated su
+        settings.tts.warmup; no-op se il TTS non è caricato. Best-effort.
+        """
+        if self._tts is None or not getattr(settings.tts, "warmup", True):
+            return
+        try:
+            await self._tts.warmup()
+        except Exception as exc:
+            logger.warning("voice_loop | warmup TTS fallito: {}", exc)
+
+    def _restore_state_after_warmup(self, prev: str) -> None:
+        """
+        Ripristina lo stato dopo un warmup, ma SOLO se è ancora "warmup":
+        se l'utente ha iniziato a registrare/parlare nel frattempo, lo stato
+        è già cambiato e non lo tocchiamo. Decisione di design: il warmup NON
+        inibisce il PTT, quindi una transizione concorrente ha la precedenza.
+        """
+        if self._state != LoopState.WARMUP:
+            return
+        target = LoopState.LISTENING if self._loaded else LoopState.IDLE
+        # Evita di "tornare" a warmup se prev era già warmup (caso degenere).
+        if prev == LoopState.WARMUP:
+            prev = target
+        self._set_state(prev if prev in (
+            LoopState.LISTENING, LoopState.IDLE,
+        ) else target)
+
     async def _load_stt(self) -> None:
         from modules.stt import WhisperSTT
         stt = WhisperSTT()
@@ -317,6 +437,103 @@ class VoiceLoop:
     async def stop(self) -> None:
         logger.info("voice_loop | stop richiesto")
         self._stop_event.set()
+
+    def cancel_generation(self) -> bool:
+        """
+        Interrompe la generazione LLM del turno in corso (come il tasto
+        "stop" di Claude/Gemini): lo stream viene troncato, la connessione
+        verso Ollama chiusa e l'eventuale TTS pendente abortito. Il testo
+        prodotto fino a quel momento viene comunque conservato.
+
+        Cooperativo e non distruttivo: NON spegne il loop né svuota lo
+        storico. È un no-op se non c'è nulla in generazione.
+
+        Returns:
+            True se un turno era effettivamente in corso (thinking/speaking),
+            False altrimenti.
+        """
+        if self._state in (LoopState.THINKING, LoopState.SPEAKING):
+            self._cancel_event.set()
+            logger.info("voice_loop | cancellazione generazione richiesta")
+            return True
+        return False
+
+    def interrupt_tts(self) -> bool:
+        """
+        Zittisce immediatamente la voce: taglia la riproduzione in corso e
+        scarta l'audio già accodato del turno attivo. A differenza di
+        cancel_generation() NON ferma l'LLM — il testo continua a scorrere,
+        solo la voce tace (utile quando si muta il TTS mentre l'assistente
+        sta parlando).
+
+        Le sintesi successive del turno sono già inibite dal flag
+        _tts_enabled in _stream_and_speak. Ritorna True se c'era una coda
+        audio attiva su cui agire.
+        """
+        acted = False
+        q = self._active_audio_queue
+        if q is not None:
+            try:
+                while True:
+                    q.get_nowait()
+                    acted = True
+            except asyncio.QueueEmpty:
+                pass
+        if self._tts is not None:
+            try:
+                loop = asyncio.get_running_loop()
+                t = loop.create_task(self._tts.stop_playback())
+                self._audio_tasks.add(t)
+                t.add_done_callback(self._audio_tasks.discard)
+                acted = True
+            except RuntimeError:
+                # Nessun event loop in esecuzione: niente da interrompere.
+                pass
+        if acted:
+            logger.info("voice_loop | riproduzione TTS interrotta (mute)")
+        return acted
+
+    async def _iter_cancellable(self, agen):
+        """
+        Itera un async-generator rendendolo interrompibile tramite
+        ``self._cancel_event``. A ogni passo corre l'attesa del prossimo
+        chunk contro l'evento di cancel: se l'evento scatta per primo —
+        anche mentre il modello è bloccato in attesa del token successivo —
+        l'iterazione del chunk viene annullata e il generatore chiuso, così
+        la connessione HTTP verso Ollama si libera subito.
+
+        Garantisce sempre ``agen.aclose()`` in uscita (break, fine naturale
+        o eccezione), evitando connessioni appese.
+        """
+        cancel_wait = asyncio.ensure_future(self._cancel_event.wait())
+        try:
+            while True:
+                nxt = asyncio.ensure_future(agen.__anext__())
+                done, _ = await asyncio.wait(
+                    {nxt, cancel_wait}, return_when=asyncio.FIRST_COMPLETED
+                )
+                # Cancel ha vinto la corsa (il chunk non è ancora arrivato).
+                if cancel_wait in done and nxt not in done:
+                    nxt.cancel()
+                    try:
+                        await nxt
+                    except (asyncio.CancelledError, StopAsyncIteration):
+                        pass
+                    except Exception as exc:
+                        logger.debug("voice_loop | chunk annullato: {}", exc)
+                    return
+                try:
+                    chunk = nxt.result()
+                except StopAsyncIteration:
+                    return
+                yield chunk
+                # Cancel arrivato tra un chunk e l'altro: esci pulito.
+                if self._cancel_event.is_set():
+                    return
+        finally:
+            if not cancel_wait.done():
+                cancel_wait.cancel()
+            await agen.aclose()
 
     @property
     def stats(self) -> VoiceLoopStats:
@@ -519,6 +736,9 @@ class VoiceLoop:
     async def _stream_and_speak(self, ctx: AssistantContext) -> None:
         self._set_state(LoopState.THINKING)
         audio_queue: asyncio.Queue = asyncio.Queue(maxsize=2)
+        # Esponi la coda così interrupt_tts() può svuotarla se il TTS viene
+        # mutato mentre l'assistente parla.
+        self._active_audio_queue = audio_queue
 
         # Strumentazione latenze (senza patchare metodi condivisi):
         #   _last_llm_ms = stream_start → primo chunk LLM
@@ -533,6 +753,10 @@ class VoiceLoop:
                 audio = await audio_queue.get()
                 if audio is None:
                     break
+                # TTS mutato a metà turno: scarta l'audio senza riprodurlo
+                # (doppia guardia oltre allo svuotamento fatto da interrupt_tts).
+                if not self._tts_enabled:
+                    continue
                 if self._tts:
                     try:
                         if self._tts_speaking_start == 0.0:
@@ -567,9 +791,12 @@ class VoiceLoop:
                 logger.warning("voice_loop | synth fallito: {} {} — skip", exc, detail)
 
         buf, full_text, first_chunk = "", "", True
+        # Ogni turno parte senza richieste di stop pendenti.
+        self._cancel_event.clear()
+        cancelled = False
 
         try:
-            async for chunk in self._orch.turn(ctx):
+            async for chunk in self._iter_cancellable(self._orch.turn(ctx)):
                 full_text += chunk
                 buf       += chunk
                 if first_chunk:
@@ -600,26 +827,49 @@ class VoiceLoop:
                         await _synth(sentence)
                     else:
                         buf = sentence + " " + buf
-            if buf.strip():
+                # Stop richiesto a metà turno: smetti di sintetizzare nuove frasi.
+                if self._cancel_event.is_set():
+                    cancelled = True
+                    break
+            # Coda finale: sintetizzata solo se il turno è terminato da sé.
+            cancelled = cancelled or self._cancel_event.is_set()
+            if not cancelled and buf.strip():
                 await _synth(buf.strip())
         except Exception:
             audio_queue.put_nowait(None)
             player_task.cancel()
             raise
         finally:
-            try:
-                await audio_queue.put(None)
-            except Exception:
-                pass
-            await player_task
-            # TTS first-audio: primo synth() → inizio riproduzione.
-            if first_synth_time > 0.0 and self._tts_speaking_start > 0.0:
-                self._last_tts_ms = round(
-                    (self._tts_speaking_start - first_synth_time) * 1000, 1
-                )
-            # Drain hardware: senza questo sleep l ultima sillaba viene troncata
-            # perche il driver audio non ha ancora svuotato il suo buffer interno.
-            await asyncio.sleep(_AUDIO_DRAIN_S)
+            if cancelled:
+                # Interruzione: scarta l'audio ancora in coda e taglia la
+                # riproduzione corrente, senza attendere il drain naturale.
+                try:
+                    while True:
+                        audio_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                player_task.cancel()
+                try:
+                    await player_task
+                except asyncio.CancelledError:
+                    pass
+                logger.info("voice_loop | generazione interrotta dall'utente")
+            else:
+                try:
+                    await audio_queue.put(None)
+                except Exception:
+                    pass
+                await player_task
+                # TTS first-audio: primo synth() → inizio riproduzione.
+                if first_synth_time > 0.0 and self._tts_speaking_start > 0.0:
+                    self._last_tts_ms = round(
+                        (self._tts_speaking_start - first_synth_time) * 1000, 1
+                    )
+                # Drain hardware: senza questo sleep l ultima sillaba viene troncata
+                # perche il driver audio non ha ancora svuotato il suo buffer interno.
+                await asyncio.sleep(_AUDIO_DRAIN_S)
+            # Turno concluso: nessuna coda audio su cui possa agire interrupt_tts.
+            self._active_audio_queue = None
 
         ctx.assistant_text = full_text
 
@@ -643,6 +893,7 @@ class VoiceLoop:
                 LoopState.RECORDING: "\U0001f534",
                 LoopState.THINKING:  "\U0001f914",
                 LoopState.SPEAKING:  "\U0001f50a",
+                LoopState.WARMUP:    "\U0001f525",
             }
             logger.debug("voice_loop | stato -> {}", state)
             print(

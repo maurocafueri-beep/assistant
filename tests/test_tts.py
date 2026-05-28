@@ -421,23 +421,41 @@ class TestQwen3TTSSynthesizeToFile:
 # ---------------------------------------------------------------------------
 
 class TestQwen3TTSPlay:
+    # play() avvia la riproduzione (non bloccante) via _start_playback e poi
+    # attende in modo asincrono finché lo stream sounddevice è attivo. Nei test
+    # mockiamo l'avvio e forziamo lo stream a "non attivo" così l'attesa termina
+    # subito senza toccare un device audio reale.
     async def test_play_calls_sounddevice(self, mock_tts):
-        with patch("modules.tts.base_tts._play_sync") as mock_play:
+        with patch("modules.tts.base_tts._start_playback") as mock_play, \
+             patch("sounddevice.get_stream") as mock_get_stream:
+            mock_get_stream.return_value.active = False
             await mock_tts.play(_make_wav_bytes(0.5))
         mock_play.assert_called_once()
 
     async def test_play_empty_audio_no_call(self, mock_tts):
-        with patch("modules.tts.base_tts._play_sync") as mock_play:
+        with patch("modules.tts.base_tts._start_playback") as mock_play:
             await mock_tts.play(b"")
         mock_play.assert_not_called()
 
+    async def test_play_handles_closed_stream(self, mock_tts):
+        # Regressione mute: durante il mute, interrupt_tts → stop_playback chiama
+        # sd.stop() che CHIUDE lo stream; il successivo accesso a .active solleva.
+        # play() deve uscire pulito (riproduzione finita), NON propagare l'errore.
+        with patch("modules.tts.base_tts._start_playback"), \
+             patch("sounddevice.get_stream", side_effect=RuntimeError("closed")):
+            await mock_tts.play(_make_wav_bytes(0.5))  # non deve sollevare
+
     async def test_say_returns_result(self, mock_tts, sample_text):
-        with patch("modules.tts.base_tts._play_sync"):
+        with patch("modules.tts.base_tts._start_playback"), \
+             patch("sounddevice.get_stream") as mock_get_stream:
+            mock_get_stream.return_value.active = False
             result = await mock_tts.say(sample_text)
         assert isinstance(result, TTSResult)
 
     async def test_say_calls_both_synth_and_play(self, mock_tts, sample_text):
-        with patch("modules.tts.base_tts._play_sync") as mock_play:
+        with patch("modules.tts.base_tts._start_playback") as mock_play, \
+             patch("sounddevice.get_stream") as mock_get_stream:
+            mock_get_stream.return_value.active = False
             await mock_tts.say(sample_text)
         mock_tts._http.post.assert_called_once()
         mock_play.assert_called_once()
@@ -516,3 +534,26 @@ class TestQwen3TTSRealServer:
             path = await tts.synthesize_to_file(sample_text, out)
         assert path.exists()
         assert path.stat().st_size > 0
+
+
+# ---------------------------------------------------------------------------
+# Warmup (prima inferenza usa-e-getta)
+# ---------------------------------------------------------------------------
+
+class TestWarmup:
+    async def test_warmup_calls_synthesize(self, mock_tts):
+        ok = await mock_tts.warmup()
+        assert ok is True
+        # warmup() passa per synthesize() → POST /synthesize
+        mock_tts._http.post.assert_awaited()
+
+    async def test_warmup_not_initialized_is_noop(self):
+        tts = Qwen3TTS.__new__(Qwen3TTS)
+        tts._http = None
+        ok = await tts.warmup()
+        assert ok is False
+
+    async def test_warmup_failure_is_soft(self, mock_tts):
+        mock_tts._http.post = AsyncMock(side_effect=RuntimeError("server giù"))
+        ok = await mock_tts.warmup()  # non deve sollevare
+        assert ok is False
