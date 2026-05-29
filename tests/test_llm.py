@@ -155,14 +155,14 @@ class TestBuildPayload:
     def test_num_ctx_default_from_settings(self, single_user_msg):
         """
         Senza num_ctx esplicito nelle options, _build_payload usa il default
-        dai settings (8192). Senza questo, Ollama userebbe il suo 4096
+        dai settings (16384). Senza questo, Ollama userebbe il suo 4096
         interno — limite troppo basso per file analysis e chat lunghe.
         """
         client = OllamaClient.__new__(OllamaClient)
         payload = client._build_payload(
             "m", single_user_msg, None, None, False
         )
-        assert payload["options"]["num_ctx"] == 8192
+        assert payload["options"]["num_ctx"] == 16384
 
     def test_num_ctx_caller_wins(self, single_user_msg):
         """

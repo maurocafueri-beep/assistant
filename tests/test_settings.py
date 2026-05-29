@@ -109,8 +109,9 @@ class TestOllamaSettings:
 
     def test_num_ctx_default(self):
         s = OllamaSettings()
-        # Default 8192 (raddoppio sicuro del default Ollama di 4096).
-        assert s.num_ctx == 8192
+        # Default 16384 (4x il default Ollama di 4096). Validato sul setup
+        # di sviluppo con KV cache q8 + Flash Attention attivi.
+        assert s.num_ctx == 16384
 
     def test_num_ctx_env_override(self, monkeypatch):
         monkeypatch.setenv("OLLAMA_NUM_CTX", "16384")

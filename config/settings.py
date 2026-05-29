@@ -78,10 +78,11 @@ class OllamaSettings(BaseSettings):
     # `OLLAMA_KV_CACHE_TYPE=q8_0`) — dimezza l'impronta del KV a parità di
     # context, qualità impercettibilmente degradata.
     #
-    # Default 8192 = raddoppio sicuro del default Ollama: porta il file
-    # analysis utile da ~5 pagine a ~10-15, lascia comunque margine VRAM.
-    # Aumentabile via env `OLLAMA_NUM_CTX` (16384, 32768) se la VRAM regge.
-    num_ctx: int = 8192
+    # Default 16384 = 4x il default Ollama. Validato sul setup di sviluppo
+    # (RTX 5080 16 GB + RTX 3060 Ti 8 GB con TTS, Gemma 4 26B IQ4_XS, KV
+    # cache q8 e Flash Attention attivi via systemd drop-in). Aumentabile a
+    # 24576/32768 via env `OLLAMA_NUM_CTX=...` su hardware con più VRAM.
+    num_ctx: int = 16384
 
 class STTSettings(BaseSettings):
     model_config = SettingsConfigDict(
