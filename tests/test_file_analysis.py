@@ -465,9 +465,10 @@ class TestExtractPdf:
         with open(f, "wb") as fh:
             w.write(fh)
 
-        out = _extract_pdf(f)
+        text, meta = _extract_pdf(f)
         # Pagine vuote → stringa vuota, non eccezione
-        assert isinstance(out, str)
+        assert isinstance(text, str)
+        assert meta["page_count"] == 2
 
     def test_malformed_pdf_raises(self, tmp_path):
         # un file non-PDF con estensione .pdf solleva — il wrapper
@@ -820,3 +821,64 @@ class TestAnalyzeAudio:
                 r = await fa.analyze(f)
                 assert r.error is None, f"errore inatteso per {ext}: {r.error}"
                 assert r.file_type == "audio"
+# ===========================================================================
+# APPENDI QUESTO IN CODA A tests/test_file_analysis.py
+# (commit page_count — test di _extract_pdf che ora ritorna (testo, metadata))
+# ===========================================================================
+
+# Se in cima al file _extract_pdf NON e' gia' importato, aggiungilo all'import
+# esistente:  from modules.file_analysis.base_file_analysis import (..., _extract_pdf)
+
+
+class TestExtractPdfPageCount:
+    """
+    _extract_pdf ora ritorna (testo, metadata) con page_count strutturale,
+    indipendente dal testo estratto. pypdf permette di creare PDF di pagine
+    vuote senza reportlab: sufficiente a coprire il conteggio pagine.
+    """
+
+    def test_returns_tuple(self, tmp_path):
+        from pypdf import PdfWriter
+        from modules.file_analysis.base_file_analysis import _extract_pdf
+
+        w = PdfWriter()
+        w.add_blank_page(width=72, height=72)
+        f = tmp_path / "one.pdf"
+        with open(f, "wb") as fh:
+            w.write(fh)
+
+        out = _extract_pdf(f)
+        assert isinstance(out, tuple) and len(out) == 2
+        text, meta = out
+        assert isinstance(text, str)
+        assert isinstance(meta, dict)
+
+    def test_page_count_structural(self, tmp_path):
+        from pypdf import PdfWriter
+        from modules.file_analysis.base_file_analysis import _extract_pdf
+
+        w = PdfWriter()
+        for _ in range(5):
+            w.add_blank_page(width=72, height=72)
+        f = tmp_path / "five.pdf"
+        with open(f, "wb") as fh:
+            w.write(fh)
+
+        text, meta = _extract_pdf(f)
+        # 5 pagine anche se vuote: page_count NON dipende dal testo
+        assert meta["page_count"] == 5
+        assert text == ""                      # pagine vuote -> nessun testo
+        assert meta["pages_with_text"] == 0
+
+    def test_metadata_keys(self, tmp_path):
+        from pypdf import PdfWriter
+        from modules.file_analysis.base_file_analysis import _extract_pdf
+
+        w = PdfWriter()
+        w.add_blank_page(width=72, height=72)
+        f = tmp_path / "k.pdf"
+        with open(f, "wb") as fh:
+            w.write(fh)
+
+        _, meta = _extract_pdf(f)
+        assert set(meta.keys()) == {"page_count", "pages_with_text"}

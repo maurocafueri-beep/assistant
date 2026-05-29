@@ -52,6 +52,7 @@ def _make_result(
     content: str = "Contenuto di esempio.",
     error: str | None = None,
     truncated: bool = False,
+    metadata: dict | None = None,
 ) -> AnalysisResult:
     """Costruisce un AnalysisResult per i mock."""
     return AnalysisResult(
@@ -64,6 +65,7 @@ def _make_result(
         elapsed_ms=12.3,
         extractor=f"{file_type}_mock",
         error=error,
+        metadata=metadata if metadata is not None else {},
     )
 
 
@@ -467,3 +469,64 @@ class TestFileAnalysisSettings:
         from config.settings import FileAnalysisSettings
         cfg = FileAnalysisSettings(safe_dirs="/home, /tmp")
         assert cfg.safe_dirs == ["/home", "/tmp"]
+# ===========================================================================
+# APPENDI QUESTO IN CODA A tests/test_orchestrator_file_analysis.py
+# (commit page_count — _format_file_analysis_block mostra page_count nell'header)
+# ===========================================================================
+
+# Richiede l'helper _make_result gia' presente nel file e l'import di
+# _format_file_analysis_block. Se _make_result NON accetta il kwarg `metadata`,
+# aggiungilo alla sua firma con default None e passalo ad AnalysisResult come
+# `metadata=metadata or {}` (vedi commento sotto).
+#
+# Se _make_result e' definito senza `metadata`, sostituisci la sua firma:
+#     def _make_result(..., metadata: dict | None = None) -> AnalysisResult:
+# e nel corpo:
+#     metadata = metadata if metadata is not None else {},
+# dentro la costruzione di AnalysisResult.
+
+
+class TestPageCountInHeader:
+    """
+    Il page_count, quando presente nei metadata del risultato, deve comparire
+    in chiaro nell'header del blocco file. Cosi' l'LLM lo legge come fatto
+    diretto invece di dedurlo dal testo troncato.
+    """
+
+    def test_page_count_shown(self):
+        r = _make_result(
+            path="/tmp/libro.pdf",
+            content="Lorem ipsum...",
+            metadata={"page_count": 287, "pages_with_text": 287},
+        )
+        block = _format_file_analysis_block([r])
+        assert "287 pagine" in block
+
+    def test_singular(self):
+        r = _make_result(
+            path="/tmp/foglio.pdf",
+            content="abc",
+            metadata={"page_count": 1, "pages_with_text": 1},
+        )
+        block = _format_file_analysis_block([r])
+        assert "1 pagina" in block
+        assert "1 pagine" not in block
+
+    def test_absent_for_non_pdf(self):
+        r = _make_result(path="/tmp/note.md", content="testo", file_type="text")
+        block = _format_file_analysis_block([r])
+        assert "pagina" not in block and "pagine" not in block
+
+    def test_coexists_with_truncation(self):
+        r = _make_result(
+            path="/tmp/libro.pdf",
+            content="x",
+            truncated=True,
+            metadata={"page_count": 287, "pages_with_text": 287},
+        )
+        r.char_count = 8000
+        r.original_char_count = 547000
+        block = _format_file_analysis_block([r])
+        assert "287 pagine" in block
+        assert "testo troncato" in block
+        assert "8000" in block and "547000" in block

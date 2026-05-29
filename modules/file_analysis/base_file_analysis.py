@@ -302,12 +302,21 @@ def _extract_html(path: Path) -> str:
     return "\n".join(lines)
 
 
-def _extract_pdf(path: Path) -> str:
-    """PDF — pypdf, una stringa per pagina separata da form-feed."""
+def _extract_pdf(path: Path) -> tuple[str, dict[str, Any]]:
+    """
+    PDF — pypdf, una stringa per pagina separata da intestazione.
+
+    Ritorna anche metadata con page_count (totale pagine del file, indipendente
+    dal troncamento del testo) e pages_with_text (pagine che hanno prodotto
+    testo). Esponendo page_count, l'LLM puo' rispondere a "quante pagine ha
+    questo libro?" senza doverlo dedurre dal testo estratto (che e' troncato e
+    porta a risposte sbagliate tipo "5 pagine" su un libro di centinaia).
+    """
     from pypdf import PdfReader  # lazy: ~80ms import
 
     reader = PdfReader(str(path))
     pages: list[str] = []
+    pages_with_text = 0
     for i, page in enumerate(reader.pages):
         try:
             txt = page.extract_text() or ""
@@ -316,7 +325,12 @@ def _extract_pdf(path: Path) -> str:
             txt = ""
         if txt.strip():
             pages.append(f"--- pagina {i + 1} ---\n{txt.strip()}")
-    return "\n\n".join(pages)
+            pages_with_text += 1
+    metadata: dict[str, Any] = {
+        "page_count":      len(reader.pages),
+        "pages_with_text": pages_with_text,
+    }
+    return "\n\n".join(pages), metadata
 
 
 def _extract_docx(path: Path) -> str:
@@ -481,7 +495,7 @@ class FileAnalyzer:
 
         # 5) Dispatch estrattore
         try:
-            content, extractor_name = await self._dispatch(resolved, file_type)
+            content, extractor_name, extractor_metadata = await self._dispatch(resolved, file_type)
         except FileAnalysisError as exc:
             return self._error_result(
                 path_str, file_type, exc.code, exc.message, t0,
@@ -510,45 +524,49 @@ class FileAnalyzer:
             truncated           = was_truncated,
             elapsed_ms          = elapsed_ms,
             extractor           = extractor_name,
-            metadata            = {"file_size_bytes": file_size},
+            metadata            = {"file_size_bytes": file_size, **extractor_metadata},
         )
         logger.info("file_analysis.analyze | OK | {}", result.to_log_dict())
         return result
 
     # -- dispatch interno ------------------------------------------------------
 
-    async def _dispatch(self, path: Path, file_type: str) -> tuple[str, str]:
+    async def _dispatch(
+        self, path: Path, file_type: str,
+    ) -> tuple[str, str, dict[str, Any]]:
         """
-        Smista al giusto estrattore. Ritorna (testo, nome_extractor).
+        Smista al giusto estrattore. Ritorna (testo, nome_extractor, metadata).
+        Solo gli estrattori con metadati strutturali significativi li popolano
+        (oggi: solo PDF, con page_count); per gli altri metadata e' {}.
         Solleva FileAnalysisError per audio senza STT; per il resto, le
-        eccezioni risalgono al chiamante che le maperà a extraction_failed.
+        eccezioni risalgono al chiamante che le mappera' a extraction_failed.
         """
         if file_type == "audio":
-            return await self._extract_audio(path), "audio_stt"
+            return await self._extract_audio(path), "audio_stt", {}
 
         # Tutti gli altri estrattori sono sincroni → run_in_executor.
         loop = asyncio.get_running_loop()
         if file_type == "pdf":
-            txt = await loop.run_in_executor(None, _extract_pdf, path)
-            return txt, "pdf_pypdf"
+            txt, meta = await loop.run_in_executor(None, _extract_pdf, path)
+            return txt, "pdf_pypdf", meta
         if file_type == "docx":
             txt = await loop.run_in_executor(None, _extract_docx, path)
-            return txt, "docx_python-docx"
+            return txt, "docx_python-docx", {}
         if file_type == "html":
             txt = await loop.run_in_executor(None, _extract_html, path)
-            return txt, "html_bs4"
+            return txt, "html_bs4", {}
         if file_type == "json":
             txt = await loop.run_in_executor(None, _extract_json, path)
-            return txt, "json_stdlib"
+            return txt, "json_stdlib", {}
         if file_type == "csv":
             txt = await loop.run_in_executor(None, _extract_csv, path)
-            return txt, "csv_stdlib"
+            return txt, "csv_stdlib", {}
         if file_type == "xml":
             txt = await loop.run_in_executor(None, _extract_xml, path)
-            return txt, "xml_raw"
+            return txt, "xml_raw", {}
         if file_type == "text":
             txt = await loop.run_in_executor(None, _extract_text, path)
-            return txt, "text_raw"
+            return txt, "text_raw", {}
 
         # Difensivo: non dovrebbe accadere (filtrato in analyze()).
         raise FileAnalysisError(

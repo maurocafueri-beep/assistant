@@ -220,12 +220,16 @@ def _format_file_analysis_block(results: list[AnalysisResult]) -> str:
         return ""
     lines = [_FILE_ANALYSIS_HEADER]
     for i, r in enumerate(usable, 1):
-        # Mostra il path con un'etichetta tipo di file per orientare l'LLM
-        header = f"[{i}] {r.path}  (tipo: {r.file_type}"
+        # Header: path + tipo + metadati strutturali (es. page_count) + troncamento.
+        # Il page_count va mostrato in chiaro cosi' l'LLM non lo deduce dal testo
+        # troncato (causa del bug "il libro ha 5 pagine" quando ne ha centinaia).
+        parts = [f"tipo: {r.file_type}"]
+        page_count = r.metadata.get("page_count")
+        if isinstance(page_count, int) and page_count > 0:
+            parts.append(f"{page_count} {'pagina' if page_count == 1 else 'pagine'}")
         if r.truncated:
-            header += f", troncato a {r.char_count}/{r.original_char_count} char"
-        header += ")"
-        lines.append(header)
+            parts.append(f"testo troncato a {r.char_count}/{r.original_char_count} char")
+        lines.append(f"[{i}] {r.path}  ({', '.join(parts)})")
         lines.append(r.content)
     lines.append(_FILE_ANALYSIS_FOOTER)
     return "\n".join(lines)
