@@ -278,6 +278,18 @@ class FileAnalysisSettings(BaseSettings):
     # Override esplicito via env: FILE_ANALYSIS_SAFE_DIRS="/home,/tmp"
     safe_dirs: list[str] | None = None
 
+    # Cleanup automatico di data/uploads/ all'avvio dell'app. Gli upload non
+    # sono transitori (l'utente può ispezionarli), ma senza pulizia la
+    # cartella cresce indefinitamente. Due retention diverse perché i due
+    # tipi di upload hanno valore diverso nel tempo:
+    #   - subdir <session_id>/: legati a una conversazione, più longevi
+    #   - default/: upload senza sessione (one-shot), si possono buttare prima
+    # 0 = retention infinita (disabilita il cleanup per quel tipo). Il cleanup
+    # è best-effort e gira in background al boot: non blocca l'avvio.
+    uploads_cleanup_enabled: bool = True
+    uploads_retention_days_session: int = Field(7, ge=0, le=365)
+    uploads_retention_days_default: int = Field(3, ge=0, le=365)
+
     @field_validator("safe_dirs", mode="before")
     @classmethod
     def parse_dirs(cls, v):

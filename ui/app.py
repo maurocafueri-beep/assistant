@@ -271,6 +271,22 @@ class _AsyncWorker(QObject):
 
                     warmup_task = asyncio.create_task(ui_loop.warmup())
                     warmup_task.add_done_callback(_warmup_done)
+
+                    # Cleanup uploads in background: rimuove i file vecchi da
+                    # data/uploads/ secondo le retention in settings. Best-effort,
+                    # non blocca l'avvio né la UI. Riferimento tenuto come per
+                    # il warmup, per evitare il GC del task a metà esecuzione.
+                    def _cleanup_done(t: "asyncio.Task") -> None:
+                        if t.cancelled():
+                            return
+                        exc = t.exception()
+                        if exc is not None:
+                            logger.warning("ui.app | cleanup task: {}", exc)
+
+                    from core.uploads_cleanup import run_cleanup_at_boot
+                    cleanup_task = asyncio.create_task(run_cleanup_at_boot())
+                    cleanup_task.add_done_callback(_cleanup_done)
+
                     await asyncio.gather(ui_loop.run(), server_task)
             finally:
                 # Chiudi il TerminalBridge se è stato caricato (idempotente)
