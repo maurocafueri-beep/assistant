@@ -301,7 +301,7 @@ class FileAnalysisSettings(BaseSettings):
     rag_inline_preview_chars: int = Field(2_000, ge=0)
     rag_chunk_target_tokens: int = Field(800, ge=64, le=8192)
     rag_overlap_tokens: int = Field(0, ge=0, le=2048)
-    rag_top_k: int = Field(5, ge=1, le=50)
+    rag_top_k: int = Field(10, ge=1, le=50)
 
     @field_validator("safe_dirs", mode="before")
     @classmethod
