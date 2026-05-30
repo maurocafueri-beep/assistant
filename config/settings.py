@@ -290,6 +290,19 @@ class FileAnalysisSettings(BaseSettings):
     uploads_retention_days_session: int = Field(7, ge=0, le=365)
     uploads_retention_days_default: int = Field(3, ge=0, le=365)
 
+    # RAG sui file grandi: sopra rag_threshold_chars di testo estratto, invece
+    # di iniettare inline solo i primi max_chars_per_file caratteri (perdendo
+    # il resto del libro), il file viene indicizzato in una collection ChromaDB
+    # dedicata e le domande recuperano i passaggi rilevanti ovunque si trovino.
+    # Resta comunque iniettato un breve estratto inline (le prime
+    # rag_inline_preview_chars) come contesto generale sempre presente.
+    rag_enabled: bool = True
+    rag_threshold_chars: int = Field(20_000, ge=0)
+    rag_inline_preview_chars: int = Field(2_000, ge=0)
+    rag_chunk_target_tokens: int = Field(800, ge=64, le=8192)
+    rag_overlap_tokens: int = Field(0, ge=0, le=2048)
+    rag_top_k: int = Field(5, ge=1, le=50)
+
     @field_validator("safe_dirs", mode="before")
     @classmethod
     def parse_dirs(cls, v):

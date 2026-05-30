@@ -59,6 +59,7 @@ from modules.memory.base_memory import SaveResult
 from modules.personality import PersonalityManager
 from modules.web_search import SearXNGClient
 from modules.file_analysis import AnalysisResult, FileAnalyzer
+from modules.file_rag import FileRAG, compute_file_id
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +145,13 @@ _FILE_ANALYSIS_HEADER = (
     "rispondere; cita il path del file quando ti riferisci ai contenuti):\n"
 )
 _FILE_ANALYSIS_FOOTER = "\n---\n"
+
+# Prefisso iniettato per i passaggi recuperati dal RAG sui file grandi.
+_FILE_RAG_HEADER = (
+    "\n\n---\nPASSAGGI RILEVANTI DA FILE DI GRANDI DIMENSIONI (recuperati "
+    "semanticamente; cita il file e la pagina quando ti riferisci a questi):\n"
+)
+_FILE_RAG_FOOTER = "\n---\n"
 
 # Regex per riconoscere path file con estensione supportata nel testo utente.
 # Cattura: path assoluti (/...), home-relativi (~/...) e path relativi
@@ -232,6 +240,29 @@ def _format_file_analysis_block(results: list[AnalysisResult]) -> str:
         lines.append(f"[{i}] {r.path}  ({', '.join(parts)})")
         lines.append(r.content)
     lines.append(_FILE_ANALYSIS_FOOTER)
+    return "\n".join(lines)
+
+
+def _format_file_rag_block(chunks: list[MemoryChunk]) -> str:
+    """
+    Formatta i chunk recuperati dal RAG sui file grandi. Mostra file e pagina
+    di provenienza così l'LLM può citarli ("a pagina 142 del libro...").
+    """
+    if not chunks:
+        return ""
+    lines = [_FILE_RAG_HEADER]
+    for i, c in enumerate(chunks, 1):
+        meta = c.metadata or {}
+        source = meta.get("source", "file")
+        ps, pe = meta.get("page_start", 0), meta.get("page_end", 0)
+        if ps and pe and ps != pe:
+            loc = f"{source}, pagine {ps}-{pe}"
+        elif ps:
+            loc = f"{source}, pagina {ps}"
+        else:
+            loc = source
+        lines.append(f"[{i}] ({loc})\n{c.content}")
+    lines.append(_FILE_RAG_FOOTER)
     return "\n".join(lines)
 
 
@@ -402,6 +433,7 @@ class Orchestrator:
         self._tts:           Optional[Any]               = None  # Qwen3TTS   (import lazy)
         self._web_search:    Optional[SearXNGClient]     = None
         self._file_analyzer: Optional[FileAnalyzer]      = None
+        self._file_rag:      Optional[FileRAG]           = None
 
         self._loaded: bool = False
 
@@ -444,12 +476,15 @@ class Orchestrator:
         # FileAnalyzer.aclose() è no-op ma manteniamo il pattern simmetrico
         if self._file_analyzer:
             tasks.append(self._file_analyzer.aclose())
+        if self._file_rag:
+            tasks.append(self._file_rag.aclose())
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
         self._llm = self._memory = self._personality = None
         self._stt = self._tts = self._web_search = None
         self._file_analyzer = None
+        self._file_rag = None
         self._loaded = False
         logger.info("orchestrator | chiuso")
 
@@ -527,6 +562,24 @@ class Orchestrator:
                     "orchestrator | file_analysis non disponibile: {} — continuo senza", exc
                 )
                 self._file_analyzer = None
+
+        # --- File RAG (indicizzazione file grandi; riusa ChromaDB+embed) ---
+        # Gated su rag_enabled e sulla disponibilità del file_analyzer (senza
+        # estrazione non c'è nulla da indicizzare). Best-effort.
+        if (
+            self._enable_file_analysis
+            and self._file_analyzer is not None
+            and getattr(settings.file_analysis, "rag_enabled", True)
+        ):
+            try:
+                self._file_rag = FileRAG()
+                await self._file_rag.load()
+                logger.debug("orchestrator | file_rag inizializzato")
+            except Exception as exc:
+                logger.warning(
+                    "orchestrator | file_rag non disponibile: {} — continuo senza", exc
+                )
+                self._file_rag = None
 
         self._loaded = True
         elapsed = (time.monotonic() - t0) * 1000
@@ -687,6 +740,10 @@ class Orchestrator:
         # 4.4 File analysis (se il testo utente cita path con estensione
         # supportata + tool consentito dal profilo)
         await self._run_file_analysis(ctx)
+
+        # 4.45 File RAG: recupera passaggi rilevanti dai file grandi indicizzati
+        # (di questo turno o di turni precedenti della sessione)
+        await self._run_file_rag(ctx)
 
         # 4.5 Web search (se trigger keyword + tool consentito dal profilo)
         await self._run_web_search(ctx)
@@ -954,6 +1011,13 @@ class Orchestrator:
         if block:
             ctx.system_prompt = (ctx.system_prompt or "") + block
 
+        # 6b) RAG: indicizza i file il cui testo COMPLETO supera la soglia
+        # (AnalysisResult.full_content valorizzato da FileAnalyzer). Registra
+        # i file_id nella sessione per il retrieval di questo e dei prossimi
+        # turni. Indicizzazione sincrona qui (best-effort); il segnalino
+        # "indexing" in background arriva nel commit successivo.
+        await self._index_large_files(ctx, results)
+
         # 7) Registra il tool call (anche se tutti i file sono falliti, per
         # diagnostica)
         ctx.add_tool_call(
@@ -967,6 +1031,90 @@ class Orchestrator:
         logger.info(
             "orchestrator._run_file_analysis | analizzati={} ok={} err={} chars_iniettati={}",
             len(results), n_ok, n_err, len(block),
+        )
+
+    async def _index_large_files(
+        self, ctx: AssistantContext, results: list[AnalysisResult],
+    ) -> None:
+        """
+        Indicizza nel RAG i file con full_content valorizzato (testo > soglia).
+        Registra i file_id in ctx.metadata["rag_files"] (lista di dict
+        {file_id, source}) per il retrieval. Best-effort: non solleva.
+        """
+        if self._file_rag is None:
+            return
+        large = [r for r in results if getattr(r, "full_content", None)]
+        if not large:
+            return
+
+        rag_files: list[dict] = ctx.metadata.get("rag_files", [])
+        known_ids = {f["file_id"] for f in rag_files}
+
+        t0 = time.monotonic()
+        for r in large:
+            source = r.path.rsplit("/", 1)[-1]  # nome file leggibile
+            try:
+                res = await self._file_rag.index_file(r.full_content, source=source)
+            except Exception as exc:
+                logger.warning(
+                    "orchestrator._index_large_files | '{}' fallito: {}", source, exc
+                )
+                continue
+            if res.file_id not in known_ids:
+                rag_files.append({"file_id": res.file_id, "source": source})
+                known_ids.add(res.file_id)
+
+        ctx.metadata["rag_files"] = rag_files
+        ctx.set_timing("file_rag_index", (time.monotonic() - t0) * 1000)
+        logger.info(
+            "orchestrator._index_large_files | file_grandi={} sessione_rag_files={}",
+            len(large), len(rag_files),
+        )
+
+    async def _run_file_rag(self, ctx: AssistantContext) -> None:
+        """
+        Se la sessione ha file indicizzati, recupera i passaggi rilevanti per
+        la domanda corrente e li inietta nel system prompt. Fuso col resto del
+        contesto (memoria, file inline). Best-effort: non solleva.
+
+        I file_id vivono in ctx.metadata["rag_files"]; per le sessioni reali
+        questo dict va propagato tra i turni dal chiamante (UIBridge), ma il
+        metodo è robusto anche se la lista è vuota.
+        """
+        if self._file_rag is None:
+            return
+        rag_files = ctx.metadata.get("rag_files") or []
+        if not rag_files:
+            return
+        query = ctx.user_text
+        if not query.strip():
+            return
+
+        top_k = getattr(settings.file_analysis, "rag_top_k", 5)
+        t0 = time.monotonic()
+        all_chunks: list = []
+        for f in rag_files:
+            try:
+                chunks = await self._file_rag.search_file(f["file_id"], query, top_k=top_k)
+            except Exception as exc:
+                logger.warning("orchestrator._run_file_rag | search '{}': {}", f.get("source"), exc)
+                continue
+            all_chunks.extend(chunks)
+
+        ctx.set_timing("file_rag", (time.monotonic() - t0) * 1000)
+        if not all_chunks:
+            return
+
+        # Ordina per rilevanza decrescente e tieni i migliori top_k globali.
+        all_chunks.sort(key=lambda c: c.relevance_score, reverse=True)
+        all_chunks = all_chunks[:top_k]
+
+        block = _format_file_rag_block(all_chunks)
+        if block:
+            ctx.system_prompt = (ctx.system_prompt or "") + block
+        logger.info(
+            "orchestrator._run_file_rag | chunk_iniettati={} files={}",
+            len(all_chunks), len(rag_files),
         )
 
     async def _run_web_search(self, ctx: AssistantContext) -> None:

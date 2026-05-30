@@ -126,6 +126,7 @@ class AnalysisResult:
     extractor:          str                            # nome del metodo che ha estratto (per log/debug)
     error:              Optional[str] = None           # popolato se l'estrazione è fallita (con .code:msg)
     metadata:           dict[str, Any] = field(default_factory=dict)
+    full_content:       Optional[str] = None           # testo COMPLETO non troncato, popolato solo se > soglia RAG (per indicizzazione); non iniettato nel prompt
 
     def is_empty(self) -> bool:
         return not self.content.strip()
@@ -515,6 +516,12 @@ class FileAnalyzer:
         final_text, original_len, was_truncated = _truncate(content, self._max_chars)
         elapsed_ms = (time.perf_counter() - t0) * 1000
 
+        # Testo completo per il RAG: lo conserviamo SOLO se supera la soglia
+        # (altrimenti il contenuto inline basta e full_content resta None per
+        # non sprecare memoria). Soglia letta dai settings, con fallback alto.
+        rag_threshold = getattr(settings.file_analysis, "rag_threshold_chars", 20_000)
+        full_for_rag = content if (rag_threshold and original_len > rag_threshold) else None
+
         result = AnalysisResult(
             path                = path_str,
             file_type           = file_type,
@@ -525,6 +532,7 @@ class FileAnalyzer:
             elapsed_ms          = elapsed_ms,
             extractor           = extractor_name,
             metadata            = {"file_size_bytes": file_size, **extractor_metadata},
+            full_content        = full_for_rag,
         )
         logger.info("file_analysis.analyze | OK | {}", result.to_log_dict())
         return result

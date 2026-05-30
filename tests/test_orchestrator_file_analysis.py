@@ -18,12 +18,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from core.context import AssistantContext, InputMode, ModelRole, OutputMode
+from core.context import AssistantContext, InputMode, MemoryChunk, ModelRole, OutputMode
 from core.orchestrator import (
     Orchestrator,
     OrchestratorStatus,
     _extract_file_paths,
     _format_file_analysis_block,
+    _format_file_rag_block,
 )
 from modules.file_analysis import AnalysisResult
 
@@ -53,6 +54,7 @@ def _make_result(
     error: str | None = None,
     truncated: bool = False,
     metadata: dict | None = None,
+    full_content: str | None = None,
 ) -> AnalysisResult:
     """Costruisce un AnalysisResult per i mock."""
     return AnalysisResult(
@@ -66,6 +68,7 @@ def _make_result(
         extractor=f"{file_type}_mock",
         error=error,
         metadata=metadata if metadata is not None else {},
+        full_content=full_content,
     )
 
 
@@ -256,6 +259,7 @@ class TestRunFileAnalysisSkip:
     async def test_skip_when_analyzer_none(self):
         orch = Orchestrator.__new__(Orchestrator)
         orch._file_analyzer = None
+        orch._file_rag = None
         ctx = make_ctx(user_text="riassumi ~/Scaricati/x.pdf")
         await orch._run_file_analysis(ctx)
         assert ctx.tool_calls == []
@@ -263,6 +267,7 @@ class TestRunFileAnalysisSkip:
     async def test_skip_when_no_path_in_text(self):
         orch = Orchestrator.__new__(Orchestrator)
         orch._file_analyzer = _make_fa_mock()
+        orch._file_rag = None
         orch._personality   = _make_personality_mock(allows=True)
         ctx = make_ctx(user_text="Spiegami i decoratori Python")
         await orch._run_file_analysis(ctx)
@@ -272,6 +277,7 @@ class TestRunFileAnalysisSkip:
     async def test_skip_when_tool_not_allowed(self):
         orch = Orchestrator.__new__(Orchestrator)
         orch._file_analyzer = _make_fa_mock()
+        orch._file_rag = None
         orch._personality   = _make_personality_mock(allows=False)
         ctx = make_ctx(user_text="riassumi ~/foo.pdf")
         await orch._run_file_analysis(ctx)
@@ -287,6 +293,7 @@ class TestRunFileAnalysisHappy:
         )
         orch = Orchestrator.__new__(Orchestrator)
         orch._file_analyzer = _make_fa_mock([result])
+        orch._file_rag = None
         orch._personality   = _make_personality_mock(allows=True)
 
         ctx = make_ctx(user_text="Riassumi /home/mauro/Scaricati/contratto.pdf")
@@ -302,6 +309,7 @@ class TestRunFileAnalysisHappy:
         result = _make_result(path="/tmp/a.pdf", content="testo")
         orch = Orchestrator.__new__(Orchestrator)
         orch._file_analyzer = _make_fa_mock([result])
+        orch._file_rag = None
         orch._personality   = _make_personality_mock(allows=True)
 
         ctx = make_ctx(user_text="apri /tmp/a.pdf")
@@ -321,6 +329,7 @@ class TestRunFileAnalysisHappy:
         ]
         orch = Orchestrator.__new__(Orchestrator)
         orch._file_analyzer = _make_fa_mock(results)
+        orch._file_rag = None
         orch._personality   = _make_personality_mock(allows=True)
 
         ctx = make_ctx(user_text="confronta /tmp/a.pdf e /tmp/b.md")
@@ -333,6 +342,7 @@ class TestRunFileAnalysisHappy:
         results = [_make_result(path=f"/tmp/{x}.pdf") for x in "abc"]
         orch = Orchestrator.__new__(Orchestrator)
         orch._file_analyzer = _make_fa_mock(results)
+        orch._file_rag = None
         orch._personality   = _make_personality_mock(allows=True)
 
         ctx = make_ctx(user_text="vedi /tmp/a.pdf /tmp/b.pdf /tmp/c.pdf /tmp/d.pdf /tmp/e.pdf")
@@ -347,6 +357,7 @@ class TestRunFileAnalysisErrors:
         bad = _make_result(error="[not_found] /tmp/x.pdf inesistente")
         orch = Orchestrator.__new__(Orchestrator)
         orch._file_analyzer = _make_fa_mock([bad])
+        orch._file_rag = None
         orch._personality   = _make_personality_mock(allows=True)
 
         ctx = make_ctx(user_text="apri /tmp/x.pdf")
@@ -363,6 +374,7 @@ class TestRunFileAnalysisErrors:
         bad  = _make_result(path="/tmp/bad.pdf", error="[not_found] missing")
         orch = Orchestrator.__new__(Orchestrator)
         orch._file_analyzer = _make_fa_mock([good, bad])
+        orch._file_rag = None
         orch._personality   = _make_personality_mock(allows=True)
 
         ctx = make_ctx(user_text="vedi /tmp/good.pdf e /tmp/bad.pdf")
@@ -386,6 +398,7 @@ class TestRunFileAnalysisErrors:
 
         orch = Orchestrator.__new__(Orchestrator)
         orch._file_analyzer = fa
+        orch._file_rag = None
         orch._personality   = _make_personality_mock(allows=True)
 
         ctx = make_ctx(user_text="apri /tmp/a.pdf e /tmp/b.pdf")
@@ -409,6 +422,7 @@ class TestRunFileAnalysisFairShare:
         ]
         orch = Orchestrator.__new__(Orchestrator)
         orch._file_analyzer = _make_fa_mock(results)
+        orch._file_rag = None
         orch._personality   = _make_personality_mock(allows=True)
 
         ctx = make_ctx(user_text="vedi /tmp/a.txt /tmp/b.txt /tmp/c.txt")
@@ -530,3 +544,127 @@ class TestPageCountInHeader:
         assert "287 pagine" in block
         assert "testo troncato" in block
         assert "8000" in block and "547000" in block
+
+class _FakeFileRAG:
+    """FileRAG fake per testare l'innesto senza ChromaDB."""
+    def __init__(self):
+        self.indexed: dict[str, str] = {}     # file_id -> source
+        self.search_returns: list = []         # MemoryChunk da restituire
+
+    async def load(self):
+        pass
+
+    async def aclose(self):
+        pass
+
+    async def index_file(self, text, *, source, file_id=None):
+        from modules.file_rag.base_file_rag import compute_file_id, IndexResult
+        fid = file_id or compute_file_id(text)
+        already = fid in self.indexed
+        self.indexed[fid] = source
+        return IndexResult(file_id=fid, chunks_indexed=3, already_indexed=already)
+
+    async def search_file(self, file_id, query, top_k=None):
+        return list(self.search_returns)
+
+
+def _make_orch_with_rag():
+    """Orchestrator minimale con file_rag fake, senza load() completo."""
+    orch = Orchestrator.__new__(Orchestrator)
+    orch._file_rag = _FakeFileRAG()
+    return orch
+
+
+class TestFormatFileRagBlock:
+    def test_empty(self):
+        assert _format_file_rag_block([]) == ""
+
+    def test_shows_source_and_page(self):
+        chunks = [MemoryChunk(
+            content="testo del passaggio",
+            source="libro.pdf",
+            relevance_score=0.9,
+            metadata={"source": "libro.pdf", "page_start": 142, "page_end": 142},
+        )]
+        block = _format_file_rag_block(chunks)
+        assert "libro.pdf" in block
+        assert "pagina 142" in block
+        assert "testo del passaggio" in block
+
+    def test_page_range(self):
+        chunks = [MemoryChunk(
+            content="x", source="l.pdf", relevance_score=0.8,
+            metadata={"source": "l.pdf", "page_start": 10, "page_end": 12},
+        )]
+        block = _format_file_rag_block(chunks)
+        assert "pagine 10-12" in block
+
+
+class TestIndexLargeFiles:
+    async def test_indexes_only_large(self):
+        orch = _make_orch_with_rag()
+        ctx = AssistantContext(user_text="domanda", session_id="s1")
+        results = [
+            _make_result(path="/up/small.pdf", content="piccolo"),  # no full_content
+            _make_result(path="/up/libro.pdf", content="estratto",
+                         full_content="--- pagina 1 ---\n" + "x" * 50000),
+        ]
+        await orch._index_large_files(ctx, results)
+        # solo il file grande è stato indicizzato
+        assert len(orch._file_rag.indexed) == 1
+        assert ctx.metadata["rag_files"][0]["source"] == "libro.pdf"
+
+    async def test_no_large_files_noop(self):
+        orch = _make_orch_with_rag()
+        ctx = AssistantContext(user_text="q", session_id="s1")
+        results = [_make_result(path="/up/x.pdf", content="piccolo")]
+        await orch._index_large_files(ctx, results)
+        assert orch._file_rag.indexed == {}
+        assert "rag_files" not in ctx.metadata or ctx.metadata["rag_files"] == []
+
+    async def test_dedup_file_id(self):
+        orch = _make_orch_with_rag()
+        ctx = AssistantContext(user_text="q", session_id="s1")
+        big = "--- pagina 1 ---\n" + "y" * 50000
+        results = [_make_result(path="/up/a.pdf", content="e", full_content=big)]
+        await orch._index_large_files(ctx, results)
+        await orch._index_large_files(ctx, results)  # stesso contenuto
+        # un solo file_id registrato, niente duplicati
+        assert len(ctx.metadata["rag_files"]) == 1
+
+    async def test_rag_disabled_noop(self):
+        orch = Orchestrator.__new__(Orchestrator)
+        orch._file_rag = None  # RAG non disponibile
+        ctx = AssistantContext(user_text="q", session_id="s1")
+        results = [_make_result(path="/up/a.pdf", content="e",
+                                full_content="--- pagina 1 ---\n" + "z" * 50000)]
+        await orch._index_large_files(ctx, results)  # non deve sollevare
+        assert "rag_files" not in ctx.metadata or not ctx.metadata.get("rag_files")
+
+
+class TestRunFileRag:
+    async def test_no_rag_files_noop(self):
+        orch = _make_orch_with_rag()
+        ctx = AssistantContext(user_text="q", session_id="s1")
+        await orch._run_file_rag(ctx)
+        assert "PASSAGGI RILEVANTI" not in (ctx.system_prompt or "")
+
+    async def test_injects_retrieved_chunks(self):
+        orch = _make_orch_with_rag()
+        orch._file_rag.search_returns = [MemoryChunk(
+            content="passaggio rilevante", source="libro.pdf",
+            relevance_score=0.95,
+            metadata={"source": "libro.pdf", "page_start": 50, "page_end": 50},
+        )]
+        ctx = AssistantContext(user_text="parlami del capitolo", session_id="s1")
+        ctx.metadata["rag_files"] = [{"file_id": "abc1234567890000", "source": "libro.pdf"}]
+        await orch._run_file_rag(ctx)
+        assert "passaggio rilevante" in ctx.system_prompt
+        assert "pagina 50" in ctx.system_prompt
+
+    async def test_empty_query_noop(self):
+        orch = _make_orch_with_rag()
+        ctx = AssistantContext(user_text="   ", session_id="s1")
+        ctx.metadata["rag_files"] = [{"file_id": "x", "source": "l.pdf"}]
+        await orch._run_file_rag(ctx)
+        assert not (ctx.system_prompt or "")
