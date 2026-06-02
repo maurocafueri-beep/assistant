@@ -59,7 +59,7 @@ from modules.memory.base_memory import SaveResult
 from modules.personality import PersonalityManager
 from modules.web_search import SearXNGClient
 from modules.file_analysis import AnalysisResult, FileAnalyzer
-from modules.file_rag import FileRAG, compute_file_id
+from modules.file_rag import FileRAG
 
 
 # ---------------------------------------------------------------------------
