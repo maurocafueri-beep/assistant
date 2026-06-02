@@ -14,6 +14,7 @@ Esecuzione:
 
 from __future__ import annotations
 
+from collections import defaultdict
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -668,3 +669,84 @@ class TestRunFileRag:
         ctx.metadata["rag_files"] = [{"file_id": "x", "source": "l.pdf"}]
         await orch._run_file_rag(ctx)
         assert not (ctx.system_prompt or "")
+
+
+class TestSessionRagPersistence:
+    """Commit 7c: i rag_files della sessione sopravvivono tra i turni.
+
+    Verifica in isolamento le due cuciture estratte da turn():
+      - _sync_session_rag  (sync-in:   store di sessione → ctx)
+      - _persist_session_rag (write-back: ctx → store di sessione)
+    Stesso stile di TestIndexLargeFiles / TestRunFileRag: nessun turn() intero.
+    """
+
+    def _orch(self):
+        # _make_orch_with_rag costruisce via __new__, quindi lo store di sessione
+        # (popolato in __init__) va impostato a mano, come si fa per _file_rag.
+        orch = _make_orch_with_rag()
+        orch._session_rag_files = defaultdict(list)
+        return orch
+
+    async def test_persist_then_sync_round_trip(self):
+        """Turno 1 indicizza un file grande e lo persiste; turno 2 (ctx nuovo,
+        stessa sessione, NESSUN path nel testo) lo ritrova via sync-in."""
+        orch = self._orch()
+        big = "--- pagina 1 ---\n" + "x" * 50000
+
+        # Turno 1: file citato → indicizzato → write-back
+        ctx1 = AssistantContext(user_text="analizza /up/libro.pdf", session_id="s1")
+        orch._sync_session_rag(ctx1)  # store vuoto: parte da []
+        await orch._index_large_files(
+            ctx1,
+            [_make_result(path="/up/libro.pdf", content="estratto", full_content=big)],
+        )
+        orch._persist_session_rag(ctx1)
+        assert orch._session_rag_files["s1"], "il file doveva restare nello store di sessione"
+        assert orch._session_rag_files["s1"][0]["source"] == "libro.pdf"
+
+        # Turno 2: ctx NUOVO, stessa sessione, nessun path → sync-in ripopola
+        ctx2 = AssistantContext(user_text="cosa succede ai mezzelfi?", session_id="s1")
+        orch._sync_session_rag(ctx2)
+        assert ctx2.metadata["rag_files"] == orch._session_rag_files["s1"]
+
+        # e il retrieval trova i chunk del file caricato al turno precedente
+        orch._file_rag.search_returns = [MemoryChunk(
+            content="lo sterminio dei mezzelfi", source="libro.pdf",
+            relevance_score=0.95,
+            metadata={"source": "libro.pdf", "page_start": 157, "page_end": 157},
+        )]
+        await orch._run_file_rag(ctx2)
+        assert "lo sterminio dei mezzelfi" in ctx2.system_prompt
+        assert "pagina 157" in ctx2.system_prompt
+
+    async def test_sync_is_defensive_copy(self):
+        """Il sync-in copia la lista: un append nel ctx non muta lo store."""
+        orch = self._orch()
+        orch._session_rag_files["s1"] = [{"file_id": "a", "source": "x.pdf"}]
+        ctx = AssistantContext(user_text="q", session_id="s1")
+        orch._sync_session_rag(ctx)
+        ctx.metadata["rag_files"].append({"file_id": "b", "source": "y.pdf"})
+        assert len(orch._session_rag_files["s1"]) == 1, "lo store non deve essere mutato"
+
+    async def test_sessions_are_isolated(self):
+        """Sessioni diverse non condividono i rag_files."""
+        orch = self._orch()
+        ctx_a = AssistantContext(user_text="q", session_id="A")
+        await orch._index_large_files(
+            ctx_a,
+            [_make_result(path="/up/a.pdf", content="e",
+                          full_content="--- pagina 1 ---\n" + "a" * 50000)],
+        )
+        orch._persist_session_rag(ctx_a)
+        ctx_b = AssistantContext(user_text="q", session_id="B")
+        orch._sync_session_rag(ctx_b)
+        assert ctx_b.metadata["rag_files"] == [], "la sessione B non deve vedere i file di A"
+
+    async def test_empty_turn_does_not_clobber(self):
+        """Un turno senza file non azzera i rag_files gia' memorizzati."""
+        orch = self._orch()
+        orch._session_rag_files["s1"] = [{"file_id": "a", "source": "x.pdf"}]
+        ctx = AssistantContext(user_text="domanda senza file", session_id="s1")
+        orch._sync_session_rag(ctx)        # ctx.metadata["rag_files"] = [a]
+        orch._persist_session_rag(ctx)     # write-back di [a], non []
+        assert orch._session_rag_files["s1"] == [{"file_id": "a", "source": "x.pdf"}]
