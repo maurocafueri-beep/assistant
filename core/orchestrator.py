@@ -735,12 +735,8 @@ class Orchestrator:
         ctx.conversation_history = list(
             self._session_histories[ctx.session_id]
         )
-        # 2b. Sincronizza i file RAG della sessione → ctx. Copia difensiva:
-        # _index_large_files fa append, non vogliamo mutare lo store di sessione
-        # finché il turno non è andato a buon fine.
-        ctx.metadata["rag_files"] = list(
-            self._session_rag_files[ctx.session_id]
-        )
+        # 2b. Sincronizza i file RAG della sessione → ctx (sync-in).
+        self._sync_session_rag(ctx)
 
         # 3. Memory RAG
         await self._run_memory(ctx)
@@ -793,12 +789,10 @@ class Orchestrator:
                     self._update_history(ctx)
                 except Exception as exc:
                     logger.warning("orchestrator.turn | update_history: {}", exc)
-            # Persiste i file RAG della sessione. Nel finally di proposito:
-            # l'indicizzazione su ChromaDB avviene prima dell'LLM, quindi anche
-            # su cancellazione dello stream il file_id non va perso.
-            rag_files = ctx.metadata.get("rag_files")
-            if rag_files:
-                self._session_rag_files[ctx.session_id] = rag_files
+            # Persiste i file RAG della sessione (write-back). Nel finally di
+            # proposito: l'indicizzazione su ChromaDB avviene prima dell'LLM,
+            # quindi anche su cancellazione dello stream il file_id non va perso.
+            self._persist_session_rag(ctx)
 
         # 8. Salvataggio in memoria
         await self._save_turn_to_memory(ctx)
@@ -882,6 +876,24 @@ class Orchestrator:
         """
         self._model_overrides[role] = name
         logger.info("orchestrator | modello[{}] → '{}'", role.value, name)
+
+    def _sync_session_rag(self, ctx: AssistantContext) -> None:
+        """Copia i file RAG della sessione nel ctx del turno (sync-in).
+
+        Copia difensiva con list(): _index_large_files fa append, non vogliamo
+        mutare lo store di sessione finché il turno non è andato a buon fine.
+        """
+        ctx.metadata["rag_files"] = list(self._session_rag_files[ctx.session_id])
+
+    def _persist_session_rag(self, ctx: AssistantContext) -> None:
+        """Salva i file RAG accumulati nel turno nello store di sessione (write-back).
+
+        Chiamato nel finally di turn(): l'indicizzazione su ChromaDB avviene
+        prima dell'LLM, quindi il file_id va persistito anche su cancellazione.
+        """
+        rag_files = ctx.metadata.get("rag_files")
+        if rag_files:
+            self._session_rag_files[ctx.session_id] = rag_files
 
     def clear_session(self, session_id: str) -> None:
         """Azzera la cronologia e i file RAG di una sessione."""
