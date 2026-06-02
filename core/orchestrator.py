@@ -441,6 +441,11 @@ class Orchestrator:
         # (permette sessioni parallele isolate)
         self._session_histories: dict[str, list[dict[str, str]]] = defaultdict(list)
 
+        # File grandi indicizzati nel RAG, per sessione: session_id → list[dict]
+        # ({file_id, source}). Stesso ciclo di vita della history: sync-in a inizio
+        # turn(), write-back nel finally, pulizia in clear_session().
+        self._session_rag_files: dict[str, list[dict]] = defaultdict(list)
+
         # Override del modello per ruolo, impostati a runtime (es. dalla UI).
         # Evita di mutare il singleton globale settings.ollama.*: lo stato
         # del modello attivo vive qui, isolato per istanza di orchestratore.
@@ -730,6 +735,12 @@ class Orchestrator:
         ctx.conversation_history = list(
             self._session_histories[ctx.session_id]
         )
+        # 2b. Sincronizza i file RAG della sessione → ctx. Copia difensiva:
+        # _index_large_files fa append, non vogliamo mutare lo store di sessione
+        # finché il turno non è andato a buon fine.
+        ctx.metadata["rag_files"] = list(
+            self._session_rag_files[ctx.session_id]
+        )
 
         # 3. Memory RAG
         await self._run_memory(ctx)
@@ -782,6 +793,12 @@ class Orchestrator:
                     self._update_history(ctx)
                 except Exception as exc:
                     logger.warning("orchestrator.turn | update_history: {}", exc)
+            # Persiste i file RAG della sessione. Nel finally di proposito:
+            # l'indicizzazione su ChromaDB avviene prima dell'LLM, quindi anche
+            # su cancellazione dello stream il file_id non va perso.
+            rag_files = ctx.metadata.get("rag_files")
+            if rag_files:
+                self._session_rag_files[ctx.session_id] = rag_files
 
         # 8. Salvataggio in memoria
         await self._save_turn_to_memory(ctx)
@@ -867,8 +884,9 @@ class Orchestrator:
         logger.info("orchestrator | modello[{}] → '{}'", role.value, name)
 
     def clear_session(self, session_id: str) -> None:
-        """Azzera la cronologia di una sessione."""
+        """Azzera la cronologia e i file RAG di una sessione."""
         self._session_histories.pop(session_id, None)
+        self._session_rag_files.pop(session_id, None)
         logger.info("orchestrator | sessione '{}' azzerata", session_id)
 
     # -----------------------------------------------------------------------
@@ -1077,9 +1095,10 @@ class Orchestrator:
         la domanda corrente e li inietta nel system prompt. Fuso col resto del
         contesto (memoria, file inline). Best-effort: non solleva.
 
-        I file_id vivono in ctx.metadata["rag_files"]; per le sessioni reali
-        questo dict va propagato tra i turni dal chiamante (UIBridge), ma il
-        metodo è robusto anche se la lista è vuota.
+        I file_id vivono in ctx.metadata["rag_files"], sincronizzati a ogni
+        turno da/verso self._session_rag_files[session_id] (vedi turn()): la
+        persistenza tra i turni è interna all'orchestrator, il chiamante non
+        deve fare nulla. Il metodo è robusto anche se la lista è vuota.
         """
         if self._file_rag is None:
             return
