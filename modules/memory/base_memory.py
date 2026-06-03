@@ -117,12 +117,16 @@ def _chroma_query(
     collection,
     embedding: list[float],
     n_results: int,
+    where: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    return collection.query(
+    kwargs: dict[str, Any] = dict(
         query_embeddings=[embedding],
         n_results=n_results,
         include=["documents", "metadatas", "distances"],
     )
+    if where:
+        kwargs["where"] = where
+    return collection.query(**kwargs)
 
 
 def _chroma_delete(collection, chunk_id: str) -> None:
@@ -281,6 +285,7 @@ class MemoryManager:
         self,
         query: str,
         top_k: Optional[int] = None,
+        session_id: Optional[str] = None,
     ) -> list[MemoryChunk]:
         """
         Ricerca semantica per similarità coseno.
@@ -308,10 +313,12 @@ class MemoryManager:
         vectors   = await self._llm.embed(query)
         embedding = vectors[0]
 
+        # Memoria per-sessione: se session_id è dato, recupera solo i suoi chunk.
+        where    = {"session_id": session_id} if session_id else None
         actual_k = min(k, count)
         raw      = await loop.run_in_executor(
             None,
-            lambda: _chroma_query(self._collection, embedding, actual_k),
+            lambda: _chroma_query(self._collection, embedding, actual_k, where=where),
         )
 
         docs:      list[str]           = (raw.get("documents") or [[]])[0]
@@ -403,7 +410,9 @@ class MemoryManager:
             return
 
         t0     = time.monotonic()
-        chunks = await self.search(q, top_k=top_k)
+        # Recupera solo dalla sessione corrente: ciò che è stato detto in una
+        # chat non deve riaffiorare in un'altra.
+        chunks = await self.search(q, top_k=top_k, session_id=ctx.session_id)
         ctx.retrieved_memories = chunks
         ctx.set_timing("memory", (time.monotonic() - t0) * 1000)
 

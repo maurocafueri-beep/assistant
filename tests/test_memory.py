@@ -524,9 +524,10 @@ class TestMemoryManagerReal:
 
     async def test_populate_context_fills_memories(self, tmp_path):
         async with MemoryManager(persist_dir=str(tmp_path)) as mem:
-            await mem.save("Roma è la capitale d'Italia.", {"source": "geo"})
-            await mem.save("Milano è la capitale della moda.", {"source": "geo"})
             ctx = AssistantContext(user_text="Dimmi qualcosa su Roma.")
+            sid = ctx.session_id
+            await mem.save("Roma è la capitale d'Italia.", {"source": "geo", "session_id": sid})
+            await mem.save("Milano è la capitale della moda.", {"source": "geo", "session_id": sid})
             await mem.populate_context(ctx, top_k=2)
             assert len(ctx.retrieved_memories) >= 1
             assert "memory" in ctx.timings
@@ -537,3 +538,27 @@ class TestMemoryManagerReal:
             chunks = await mem.search("test", top_k=1)
             for c in chunks:
                 assert 0.0 <= c.relevance_score <= 1.0
+
+
+class TestMemorySessionScope:
+    """La memoria recupera solo i chunk della sessione corrente (no leak tra chat)."""
+
+    async def test_search_with_session_filters_query(self, mem, mock_collection):
+        mock_collection.count.return_value = 3
+        await mem.search("q", session_id="s1")
+        assert mock_collection.query.call_args.kwargs.get("where") == {"session_id": "s1"}
+
+    async def test_search_without_session_no_filter(self, mem, mock_collection):
+        mock_collection.count.return_value = 3
+        await mem.search("q")
+        assert mock_collection.query.call_args.kwargs.get("where") is None
+
+    async def test_populate_context_filters_by_session(self, mem, mock_collection):
+        mock_collection.count.return_value = 3
+        ctx = MagicMock()
+        ctx.user_text = "domanda"
+        ctx.session_id = "sess-X"
+        ctx.turn_id = "t1"
+        await mem.populate_context(ctx)
+        assert mock_collection.query.call_args.kwargs.get("where") == {"session_id": "sess-X"}
+
