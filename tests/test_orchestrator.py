@@ -631,3 +631,45 @@ class TestWarmupModel:
         ok = await orch.warmup_model("")
         assert ok is False
         orch._llm.warmup.assert_not_awaited()
+
+
+class TestSaveTurnSkipsFileContent:
+    """La risposta file-grounded non entra nella memoria globale.
+
+    Il contenuto del file vive nel file RAG (per sessione, effimero); la memoria
+    non filtra per sessione, quindi salvare la risposta la farebbe riemergere in
+    altre chat. Il testo utente si continua a salvare.
+    """
+
+    @staticmethod
+    def _roles(mem_save_mock):
+        # save(text, metadata) → metadata è il 2° arg posizionale
+        return [c.args[1].get("role") for c in mem_save_mock.call_args_list]
+
+    async def test_assistant_not_saved_when_rag_files(self, orch):
+        orch._memory.save.reset_mock()
+        ctx = make_ctx(user_text="Cosa succede a pagina 157?")
+        ctx.assistant_text = "A pagina 157, lo sterminio dei mezzelfi..."
+        ctx.metadata["rag_files"] = [{"file_id": "x", "source": "libro.pdf"}]
+        await orch._save_turn_to_memory(ctx)
+        roles = self._roles(orch._memory.save)
+        assert "user" in roles            # la domanda utente sì
+        assert "assistant" not in roles   # la risposta sul libro no
+
+    async def test_assistant_not_saved_when_file_analysis_tool(self, orch):
+        orch._memory.save.reset_mock()
+        ctx = make_ctx(user_text="leggi /tmp/a.pdf")
+        ctx.assistant_text = "Il file contiene..."
+        ctx.add_tool_call(tool="file_analysis", args={}, result=[])
+        await orch._save_turn_to_memory(ctx)
+        roles = self._roles(orch._memory.save)
+        assert "assistant" not in roles
+
+    async def test_both_saved_in_normal_turn(self, orch):
+        orch._memory.save.reset_mock()
+        ctx = make_ctx(user_text="Mi chiamo Mauro.")
+        ctx.assistant_text = "Piacere, Mauro."
+        await orch._save_turn_to_memory(ctx)
+        roles = self._roles(orch._memory.save)
+        assert "user" in roles and "assistant" in roles
+

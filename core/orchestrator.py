@@ -1280,9 +1280,21 @@ class Orchestrator:
         """
         Salva in ChromaDB il testo utente e la risposta dell'assistente.
         Errori non fatali.
+
+        Eccezione: nei turni con un file in gioco (analisi inline o RAG sulla
+        sessione) la risposta dell'assistente NON viene memorizzata. Il suo
+        contenuto è derivato dal file e vive già nel file RAG, effimero e isolato
+        per sessione; la memoria invece è globale (search senza filtro di
+        sessione), quindi salvarlo lo farebbe riemergere in altre chat. Il testo
+        utente si continua a salvare (preserva fatti personali detti nel turno).
         """
         if not self._memory:
             return
+
+        file_in_turn = (
+            bool(ctx.metadata.get("rag_files"))
+            or any(t.get("tool") == _FILE_ANALYSIS_TOOL for t in ctx.tool_calls)
+        )
 
         base_meta = {
             "session_id": ctx.session_id,
@@ -1298,7 +1310,7 @@ class Orchestrator:
         except Exception as exc:
             logger.warning("orchestrator._save_turn | salvataggio user fallito: {}", exc)
 
-        if ctx.assistant_text:
+        if ctx.assistant_text and not file_in_turn:
             try:
                 await self._memory.save(
                     ctx.assistant_text,
@@ -1308,6 +1320,10 @@ class Orchestrator:
                 logger.warning(
                     "orchestrator._save_turn | salvataggio assistant fallito: {}", exc
                 )
+        elif ctx.assistant_text and file_in_turn:
+            logger.debug(
+                "orchestrator._save_turn | risposta file-grounded non memorizzata"
+            )
 
     def _update_history(self, ctx: AssistantContext) -> None:
         """
