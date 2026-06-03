@@ -148,8 +148,10 @@ _FILE_ANALYSIS_FOOTER = "\n---\n"
 
 # Prefisso iniettato per i passaggi recuperati dal RAG sui file grandi.
 _FILE_RAG_HEADER = (
-    "\n\n---\nPASSAGGI RILEVANTI DA FILE DI GRANDI DIMENSIONI (recuperati "
-    "semanticamente; cita il file e la pagina quando ti riferisci a questi):\n"
+    "\n\n---\nPASSAGGI RILEVANTI DAL FILE (recuperati semanticamente per la "
+    "domanda corrente). Basa la risposta PRINCIPALMENTE su questi passaggi, "
+    "non sull'estratto introduttivo qui sopra; cita SEMPRE file e pagina "
+    '(es. "a pagina 157") quando riporti un contenuto:\n'
 )
 _FILE_RAG_FOOTER = "\n---\n"
 
@@ -217,11 +219,20 @@ def _extract_file_paths(text: str, max_paths: int = 3) -> list[str]:
     return found
 
 
-def _format_file_analysis_block(results: list[AnalysisResult]) -> str:
+def _format_file_analysis_block(
+    results: list[AnalysisResult],
+    *,
+    rag_preview_chars: int | None = None,
+) -> str:
     """
     Formatta i risultati di FileAnalyzer in un blocco testuale da iniettare
     nel system prompt. Gemello di _format_search_block ma per i file.
     Salta i risultati con contenuto vuoto, mostra path + contenuto.
+
+    Se rag_preview_chars è valorizzato, i file destinati al RAG (full_content
+    presente) vengono iniettati inline solo come breve estratto introduttivo:
+    il dettaglio arriva dai PASSAGGI RILEVANTI recuperati semanticamente, così
+    non si satura il context iniettando due volte lo stesso contenuto.
     """
     usable = [r for r in results if r.error is None and r.content.strip()]
     if not usable:
@@ -235,10 +246,21 @@ def _format_file_analysis_block(results: list[AnalysisResult]) -> str:
         page_count = r.metadata.get("page_count")
         if isinstance(page_count, int) and page_count > 0:
             parts.append(f"{page_count} {'pagina' if page_count == 1 else 'pagine'}")
-        if r.truncated:
+        # File grande destinato al RAG: inline solo un estratto introduttivo,
+        # i dettagli arrivano dai chunk recuperati semanticamente.
+        in_rag = bool(getattr(r, "full_content", None))
+        body = r.content
+        if rag_preview_chars and in_rag and len(body) > rag_preview_chars:
+            body = (
+                body[:rag_preview_chars]
+                + "\n\n[...estratto introduttivo. Il contenuto completo è "
+                "indicizzato: usa i PASSAGGI RILEVANTI qui sotto per i dettagli.]"
+            )
+            parts.append("estratto introduttivo — dettagli nei passaggi RAG")
+        elif r.truncated:
             parts.append(f"testo troncato a {r.char_count}/{r.original_char_count} char")
         lines.append(f"[{i}] {r.path}  ({', '.join(parts)})")
-        lines.append(r.content)
+        lines.append(body)
     lines.append(_FILE_ANALYSIS_FOOTER)
     return "\n".join(lines)
 
@@ -1036,8 +1058,12 @@ class Orchestrator:
                         r.char_count = len(r.content)
                         r.truncated = True
 
-        # 6) Inietta nel system prompt
-        block = _format_file_analysis_block(results)
+        # 6) Inietta nel system prompt. Per i file destinati al RAG l'estratto
+        # inline è ridotto a rag_inline_preview_chars: il dettaglio lo portano
+        # i PASSAGGI RILEVANTI, evitando di saturare il context.
+        block = _format_file_analysis_block(
+            results, rag_preview_chars=cfg.rag_inline_preview_chars
+        )
         if block:
             ctx.system_prompt = (ctx.system_prompt or "") + block
 

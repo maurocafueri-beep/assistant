@@ -227,6 +227,28 @@ class TestFormatFileAnalysisBlock:
         assert "troncato" in block
         assert "8000" in block and "50000" in block
 
+    def test_rag_preview_truncates_when_full_content(self):
+        # File grande (full_content valorizzato) + preview attivo: inline ridotto
+        # a un estratto introduttivo, il dettaglio lo porta il RAG.
+        big = "x" * 8000
+        results = [_make_result(
+            path="/tmp/libro.pdf", content=big,
+            full_content="--- pagina 1 ---\n" + big,
+        )]
+        block = _format_file_analysis_block(results, rag_preview_chars=2000)
+        assert "estratto introduttivo" in block
+        assert "PASSAGGI RILEVANTI" in block        # il marcatore rimanda al RAG
+        assert len(block) < 4000                    # molto piu' corto degli 8000 char
+
+    def test_rag_preview_ignored_for_small_files(self):
+        # File piccolo (full_content None): nessun troncamento anche con preview.
+        results = [_make_result(
+            path="/tmp/nota.txt", content="contenuto intero", file_type="text",
+        )]
+        block = _format_file_analysis_block(results, rag_preview_chars=2000)
+        assert "contenuto intero" in block
+        assert "estratto introduttivo" not in block
+
 
 # ===========================================================================
 # OrchestratorStatus — campo file_analysis_ok
