@@ -7,7 +7,13 @@ import sys
 from pathlib import Path
 from loguru import logger as _logger
 
-def setup_logging(level: str = "INFO", log_dir: Path = Path("logs")) -> None:
+def setup_logging(level: str = "INFO", log_dir: Path | None = None) -> None:
+    if log_dir is None:
+        # Path assoluto da settings (PROJECT_ROOT/logs): i log finiscono sempre
+        # nella stessa cartella anche quando l'app parte dall'icona della dock
+        # (working directory diversa da ~/assistant). Import lazy: evita cicli.
+        from config.settings import settings
+        log_dir = settings.log_dir
     _logger.remove()
     fmt = (
         "<green>{time:HH:mm:ss}</green> | "
