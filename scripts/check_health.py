@@ -53,8 +53,8 @@ for cat, mod, pkg in [
 import httpx
 for name, url, err_msg in [
     ("Ollama", "http://localhost:11434/api/tags", "esegui: systemctl start ollama"),
-    ("SearXNG", "http://localhost:8080/search?q=test&format=json", "esegui: make setup-docker"),
-    ("Open WebUI", "http://localhost:3000", "esegui: make setup-docker"),
+    ("SearXNG", "http://localhost:8080/search?q=test&format=json", "esegui: cd docker && docker compose up -d"),
+    ("Open WebUI", "http://localhost:3000", "esegui: cd docker && docker compose up -d"),
 ]:
     try:
         r = httpx.get(url, timeout=3)
@@ -91,9 +91,9 @@ for cat, name, status, detail, color in results:
 
 console.print()
 console.print(table)
-ok_n = sum(1 for *_,s,_ in results if s=="✓")
-fail_n = sum(1 for *_,s,_ in results if s=="✗")
-warn_n = sum(1 for *_,s,_ in results if s=="⚠")
+ok_n = sum(1 for _c, _n, s, _d, _col in results if s=="✓")
+fail_n = sum(1 for _c, _n, s, _d, _col in results if s=="✗")
+warn_n = sum(1 for _c, _n, s, _d, _col in results if s=="⚠")
 console.print(f"\n  [green]{ok_n} ok[/green]  [yellow]{warn_n} avvisi[/yellow]  [red]{fail_n} errori[/red]\n")
 if fail_n > 0:
     console.print("[red]  ✗ Risolvi gli errori prima di avviare.[/red]\n"); sys.exit(1)

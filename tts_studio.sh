@@ -4,12 +4,9 @@
 
 cd "$(dirname "$0")"
 
-VENV_NVIDIA="$(pwd)/venv-tts/lib/python3.12/site-packages/nvidia"
-export LD_LIBRARY_PATH="\
-$VENV_NVIDIA/cublas/lib:\
-$VENV_NVIDIA/cudnn/lib:\
-$VENV_NVIDIA/cuda_runtime/lib:\
-${LD_LIBRARY_PATH}"
-
+# Lo Studio è un orchestratore web leggero (fastapi/httpx/uvicorn) e gira in
+# venv-runtime. NON carica CUDA: il vero server TTS è lanciato come
+# sottoprocesso con venv-tts/bin/python da tools/tts_studio.py, che imposta lì
+# LD_LIBRARY_PATH sulle lib CUDA di venv-tts. Qui non serve esportarle.
 echo "Avvio TTS Studio..."
 venv-runtime/bin/python tools/tts_studio.py

@@ -64,7 +64,11 @@ pull-models:
 
 .PHONY: train
 train:
-	$(TRAINING_VENV)/bin/python training/lora_trainer.py
+	@if [ -f training/lora_trainer.py ]; then \
+		$(TRAINING_VENV)/bin/python training/lora_trainer.py; \
+	else \
+		echo "⚠ training/lora_trainer.py non presente — fine-tuning LoRA non ancora implementato (roadmap)"; \
+	fi
 
 .PHONY: test
 test:

@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-assistant"
@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["core*", "modules*", "api*", "config*", "training*"]
+include = ["core*", "modules*", "ui*", "config*", "training*"]
 
 [tool.black]
 line-length = 100
