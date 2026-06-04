@@ -1,7 +1,8 @@
 # Struttura del progetto local-assistant
-# Aggiornata il 2026-05-28
+# Aggiornata il 2026-06-01
 # Esclusi: venv-*, vendor/ (repo git a sé), __pycache__, cache HF/torch
-#          (data/hf-cache, data/torch-cache), .pytest_cache, .git
+#          (data/hf-cache, data/torch-cache), .pytest_cache, .git,
+#          backup_progetto/ (cartella di backup piatta per upload).
 # Nota:    data/uploads/ è mostrata come sola cartella — contiene i file
 #          caricati dall'utente, organizzati per sessione (artefatti runtime,
 #          non enumerati qui).
@@ -12,6 +13,7 @@
 ├── config/
 │   ├── personalities/
 │   │   ├── default.yaml
+│   │   ├── Aurora.yml
 │   │   ├── dev.yaml
 │   │   └── Gwen.yml
 │   ├── __init__.py
@@ -21,13 +23,20 @@
 │   ├── __init__.py
 │   ├── logger.py
 │   ├── orchestrator.py
+│   ├── uploads_cleanup.py
 │   └── voice_loop.py
 ├── data/
 │   ├── Conversations/
 │   ├── embeddings/
+│   │   ├── 07c3afb7-021b-426f-9df9-4147ff05441f/
+│   │   │   ├── data_level0.bin
+│   │   │   ├── header.bin
+│   │   │   ├── length.bin
+│   │   │   └── link_lists.bin
 │   │   ├── 5a4d952e-9f54-4b8a-9c45-a06e94878103/
 │   │   │   ├── data_level0.bin
 │   │   │   ├── header.bin
+│   │   │   ├── index_metadata.pickle
 │   │   │   ├── length.bin
 │   │   │   └── link_lists.bin
 │   │   └── chroma.sqlite3
@@ -69,6 +78,9 @@
 ├── modules/
 │   ├── file_analysis/
 │   │   ├── base_file_analysis.py
+│   │   └── __init__.py
+│   ├── file_rag/
+│   │   ├── base_file_rag.py
 │   │   └── __init__.py
 │   ├── gaming/
 │   │   ├── base_gaming.py
@@ -123,6 +135,7 @@
 │   ├── conftest.py
 │   ├── __init__.py
 │   ├── test_file_analysis.py
+│   ├── test_file_rag.py
 │   ├── test_llm.py
 │   ├── test_memory.py
 │   ├── test_orchestrator_file_analysis.py
@@ -137,6 +150,7 @@
 │   ├── test_terminal_bridge.py
 │   ├── test_tts.py
 │   ├── test_ui_uploads.py
+│   ├── test_uploads_cleanup.py
 │   └── test_web_search.py
 ├── tools/
 │   └── tts_studio.py
@@ -150,6 +164,7 @@
 │   │   ├── chat.html
 │   │   └── terminal.html
 │   ├── app.py
+│   ├── bootstrap.py
 │   ├── bridge.py
 │   ├── __init__.py
 │   ├── server.py
@@ -166,4 +181,4 @@
 ├── struttura.txt
 └── tts_studio.sh*
 
-45 directories, 111 files
+47 directories, 123 files
