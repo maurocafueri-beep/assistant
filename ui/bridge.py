@@ -139,6 +139,7 @@ class UIBridge(VoiceLoop):
             "id": sid, "name": name,
             "created": _t.time(), "last_active": _t.time(),
             "messages": [],
+            "rag_files": [],
         }
 
     def list_sessions(self) -> list[dict]:
@@ -240,6 +241,26 @@ class UIBridge(VoiceLoop):
                 except Exception as exc:
                     logger.warning("ui.bridge | restore history {}: {}", sid, exc)
         logger.info("ui.bridge | history orchestratore ripristinata per {} sessioni", restored)
+        return restored
+
+    def restore_rag_files_from_sessions(self) -> int:
+        """
+        Reinietta nell'orchestrator i file RAG salvati per sessione, così dopo
+        un riavvio il RAG dei file caricati torna disponibile senza ricaricarli.
+        Gemello di restore_histories_from_sessions; va chiamato DOPO load().
+        Errori non fatali. Ritorna il numero di sessioni ripristinate.
+        """
+        restored = 0
+        for sid, s in self._sessions.items():
+            rag = s.get("rag_files") or []
+            if not rag:
+                continue
+            try:
+                self._orch._session_rag_files[sid] = list(rag)
+                restored += 1
+            except Exception as exc:
+                logger.warning("ui.bridge | restore rag_files {}: {}", sid, exc)
+        logger.info("ui.bridge | rag_files ripristinati per {} sessioni", restored)
         return restored
 
     def _record_message(self, role: str, text: str) -> None:
@@ -555,6 +576,15 @@ class UIBridge(VoiceLoop):
             self._tts_speaking_start = 0.0
             self._set_state("listening")
             self._stats.total_words_out += len(ctx.assistant_text.split())
+            # Salva i file RAG della sessione in _sessions[sid]: il _persist()
+            # di _record_message li scrive su disco e così sopravvivono al
+            # riavvio (l'orchestrator li tiene solo in RAM in _session_rag_files).
+            try:
+                rag = self._orch._session_rag_files.get(self._session_id)
+                if rag:
+                    self._sessions[self._session_id]["rag_files"] = list(rag)
+            except Exception as exc:
+                logger.warning("ui.bridge | persist rag_files: {}", exc)
             if ctx.assistant_text.strip():
                 self._record_message("asst", ctx.assistant_text.strip())
             print()

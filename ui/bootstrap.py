@@ -285,6 +285,13 @@ async def serve(
             except Exception as exc:
                 logger.warning("ui.bootstrap | restore histories: {}", exc)
 
+            # Ripristina i file RAG per sessione: dopo un riavvio le chat con
+            # file caricati tornano interrogabili senza ricaricare il file.
+            try:
+                ui_loop.restore_rag_files_from_sessions()
+            except Exception as exc:
+                logger.warning("ui.bootstrap | restore rag_files: {}", exc)
+
             # Chiude la race d'avvio: i client connessi prima che il loop fosse
             # pronto ricevono ora l'init completo senza dover riconnettere.
             try:
