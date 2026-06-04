@@ -49,8 +49,8 @@ class OllamaSettings(BaseSettings):
     # Default = tag Ollama realmente installati. Override via .env
     # (OLLAMA_CHAT_MODEL, OLLAMA_CODE_MODEL, ...). Devono esistere su
     # `ollama list`, altrimenti ogni turno LLM fallisce.
-    chat_model: str = "qwen3:14b-q8_0"
-    code_model: str = "qwen3:30b-a3b-q4_K_M"
+    chat_model: str = "VladimirGav/gemma4-26b-16GB-VRAM-Uncensored:latest"
+    code_model: str = "VladimirGav/gemma4-26b-16GB-VRAM-Uncensored:latest"
     vision_model: str = "qwen3-vl:8b"
     embed_model: str = "nomic-embed-text"
     timeout: int = 120
