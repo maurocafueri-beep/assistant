@@ -540,6 +540,26 @@ class TestMemoryManagerReal:
                 assert 0.0 <= c.relevance_score <= 1.0
 
 
+class TestMemoryGetAll:
+    """get_all restituisce tutti i chunk (testo+metadata), per le scansioni complete."""
+
+    async def test_returns_text_and_metadata(self, mem, mock_collection):
+        mock_collection.get.return_value = {
+            "documents": ["uno", "due"],
+            "metadatas": [{"chunk_index": 0}, {"chunk_index": 1}],
+        }
+        items = await mem.get_all()
+        assert items == [
+            {"text": "uno", "metadata": {"chunk_index": 0}},
+            {"text": "due", "metadata": {"chunk_index": 1}},
+        ]
+
+    async def test_empty_collection(self, mem, mock_collection):
+        mock_collection.get.return_value = {"documents": [], "metadatas": []}
+        assert await mem.get_all() == []
+
+
+
 class TestMemorySessionScope:
     """La memoria recupera solo i chunk della sessione corrente (no leak tra chat)."""
 

@@ -171,6 +171,9 @@ class _FakeManager:
     async def clear(self):
         n = len(self._store); self._store.clear(); return n
 
+    async def get_all(self):
+        return [{"text": text, "metadata": meta} for _cid, text, meta in self._store]
+
 
 @pytest.fixture
 def rag(monkeypatch):
@@ -221,3 +224,52 @@ class TestFileRAG:
         a = await rag.index_file("--- pagina 1 ---\nidentico", source="a.pdf")
         # nuovo FileRAG, stesso contenuto → stesso file_id
         assert a.file_id == compute_file_id("--- pagina 1 ---\nidentico")
+
+
+class TestMapReduceData:
+    """Stadio 1 del map-reduce: chunk ordinati e raggruppati in blocchi."""
+
+    async def test_get_ordered_chunks_sorts_by_index(self, rag, monkeypatch):
+        await rag.load()
+        fake = _FakeManager(collection_name="file_x")
+        # store volutamente FUORI ordine: index 2, 0, 1
+        fake._store = [
+            ("x_2", "terzo",   {"chunk_index": 2, "page_start": 5, "page_end": 5}),
+            ("x_0", "primo",   {"chunk_index": 0, "page_start": 1, "page_end": 1}),
+            ("x_1", "secondo", {"chunk_index": 1, "page_start": 3, "page_end": 3}),
+        ]
+
+        async def _ret(_fid):
+            return fake
+        monkeypatch.setattr(rag, "_manager_for", _ret)
+
+        chunks = await rag.get_ordered_chunks("xxx")
+        assert [c["text"] for c in chunks] == ["primo", "secondo", "terzo"]
+        assert chunks[0]["page_start"] == 1
+        assert chunks[-1]["page_end"] == 5
+
+    def _chunks(self):
+        return [
+            {"text": "a" * 30, "page_start": 1, "page_end": 1, "index": 0},
+            {"text": "b" * 30, "page_start": 2, "page_end": 2, "index": 1},
+            {"text": "c" * 30, "page_start": 3, "page_end": 3, "index": 2},
+        ]
+
+    def test_iter_blocks_groups_and_page_ranges(self):
+        blocks = list(FileRAG.iter_blocks(self._chunks(), block_chars=70))
+        assert len(blocks) == 2
+        assert blocks[0]["page_start"] == 1 and blocks[0]["page_end"] == 2
+        assert blocks[0]["n_chunks"] == 2
+        assert "a" * 30 in blocks[0]["text"] and "b" * 30 in blocks[0]["text"]
+        assert blocks[1]["page_start"] == 3 and blocks[1]["page_end"] == 3
+        assert blocks[1]["n_chunks"] == 1
+
+    def test_iter_blocks_single_when_budget_large(self):
+        blocks = list(FileRAG.iter_blocks(self._chunks(), block_chars=10000))
+        assert len(blocks) == 1
+        assert blocks[0]["page_start"] == 1 and blocks[0]["page_end"] == 3
+        assert blocks[0]["n_chunks"] == 3
+
+    def test_iter_blocks_empty(self):
+        assert list(FileRAG.iter_blocks([], block_chars=100)) == []
+
