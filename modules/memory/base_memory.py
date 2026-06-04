@@ -388,6 +388,23 @@ class MemoryManager:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, lambda: self._collection.count())
 
+    async def get_all(self) -> list[dict]:
+        """
+        Tutti i chunk della collection (testo + metadata), senza ordine
+        garantito e senza similarità: per le scansioni complete (es. map-reduce),
+        non per il retrieval mirato.
+        """
+        self._require_loaded()
+        loop = asyncio.get_running_loop()
+
+        def _fetch() -> list[dict]:
+            res   = self._collection.get(include=["documents", "metadatas"])
+            docs  = res.get("documents") or []
+            metas = res.get("metadatas") or []
+            return [{"text": d, "metadata": m or {}} for d, m in zip(docs, metas)]
+
+        return await loop.run_in_executor(None, _fetch)
+
     async def populate_context(
         self,
         ctx:   AssistantContext,

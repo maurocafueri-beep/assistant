@@ -32,7 +32,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from config.settings import settings
 from core.context import MemoryChunk
@@ -404,6 +404,56 @@ class FileRAG:
         if await mgr.count() == 0:
             return []
         return await mgr.search(query, top_k=top_k if top_k is not None else self._top_k)
+
+    async def get_ordered_chunks(self, file_id: str) -> list[dict]:
+        """
+        Tutti i chunk del file in ordine di documento (per chunk_index), come
+        lista di {"text", "page_start", "page_end", "index"}. Per le scansioni
+        complete (map-reduce): NON è una ricerca per similarità.
+        Lista vuota se il file non è indicizzato.
+        """
+        mgr   = await self._manager_for(file_id)
+        items = await mgr.get_all()
+        out: list[dict] = []
+        for it in items:
+            m = it.get("metadata") or {}
+            out.append({
+                "text":       it.get("text") or "",
+                "page_start": m.get("page_start", 0),
+                "page_end":   m.get("page_end", 0),
+                "index":      m.get("chunk_index", 0),
+            })
+        out.sort(key=lambda c: c["index"])
+        return out
+
+    @staticmethod
+    def iter_blocks(chunks: list[dict], block_chars: int) -> Iterator[dict]:
+        """
+        Raggruppa chunk ordinati in blocchi fino a ~block_chars caratteri. Ogni
+        blocco: {"text", "page_start", "page_end", "n_chunks"}, con le pagine del
+        primo e dell'ultimo chunk del blocco. Puro: la dimensione la decide il
+        chiamante (lo stadio map la prenderà da settings).
+        """
+        buf: list[str] = []
+        size = 0
+        p_start = None
+        p_end = None
+        n = 0
+        for c in chunks:
+            t = c.get("text") or ""
+            if buf and size + len(t) > block_chars:
+                yield {"text": "\n\n".join(buf), "page_start": p_start,
+                       "page_end": p_end, "n_chunks": n}
+                buf, size, p_start, p_end, n = [], 0, None, None, 0
+            buf.append(t)
+            size += len(t)
+            if p_start is None:
+                p_start = c.get("page_start", 0)
+            p_end = c.get("page_end", 0)
+            n += 1
+        if buf:
+            yield {"text": "\n\n".join(buf), "page_start": p_start,
+                   "page_end": p_end, "n_chunks": n}
 
     async def is_indexed(self, file_id: str) -> bool:
         """True se la collection del file esiste e contiene chunk."""
