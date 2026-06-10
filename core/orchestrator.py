@@ -61,6 +61,7 @@ from modules.web_search import SearXNGClient
 from modules.file_analysis import AnalysisResult, FileAnalyzer
 from modules.file_rag import FileRAG
 from modules.intent import Intent, IntentClassifier
+from modules.map_reduce import MapReduceEngine
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +290,25 @@ def _format_file_rag_block(chunks: list[MemoryChunk]) -> str:
     return "\n".join(lines)
 
 
+_MAPREDUCE_INTENTS = {
+    Intent.FILE_GLOBAL, Intent.FILE_STRUCTURAL, Intent.FILE_POSITIONAL,
+}
+_MAPREDUCE_BLOCK_CHARS = 40000      # ~10K token per blocco sul context 16K
+_POSITIONAL_BLOCKS = 2              # primi N + ultimi N per le domande posizionali
+
+_MAP_REDUCE_HEADER = (
+    "\n\n---\nSINTESI DAL DOCUMENTO COMPLETO (ottenuta scandendo l'intero file; "
+    "basati su questa per rispondere e cita le pagine indicate):\n"
+)
+
+
+def _format_map_reduce_block(content: str) -> str:
+    """Formatta la sintesi map-reduce come blocco di contesto da iniettare."""
+    if not content or not content.strip():
+        return ""
+    return _MAP_REDUCE_HEADER + content.strip() + "\n"
+
+
 # ---------------------------------------------------------------------------
 # Helper — costruzione prompt
 # ---------------------------------------------------------------------------
@@ -514,6 +534,7 @@ class Orchestrator:
         self._file_analyzer = None
         self._file_rag = None
         self._intent_classifier = None
+        self._map_reduce = None
         self._loaded = False
         logger.info("orchestrator | chiuso")
 
@@ -535,6 +556,9 @@ class Orchestrator:
 
         # --- Classificatore di intenti (gira sul modello chat, gia' in VRAM) ---
         self._intent_classifier = IntentClassifier(self._llm)
+
+        # --- Motore map-reduce (scansione globale dei documenti) ---
+        self._map_reduce = MapReduceEngine(self._llm)
 
         # --- Personality (YAML, veloce) ---
         self._personality = PersonalityManager(default_name=self._personality_name)
@@ -782,6 +806,10 @@ class Orchestrator:
         # 4.45 File RAG: recupera passaggi rilevanti dai file grandi indicizzati
         # (di questo turno o di turni precedenti della sessione)
         await self._run_file_rag(ctx)
+
+        # 4.47 Map-reduce on-demand: domande globali/strutturali/posizionali sul
+        # documento (instradate dal classificatore). Inietta la sintesi.
+        await self._run_map_reduce(ctx)
 
         # 4.5 Web search (se trigger keyword + tool consentito dal profilo)
         await self._run_web_search(ctx)
@@ -1149,6 +1177,15 @@ class Orchestrator:
         """
         if self._file_rag is None:
             return
+        # Si fa da parte solo se il classificatore ha instradato al map-reduce
+        # (file globale/strutturale/posizionale) SENZA intento locale: in quel
+        # caso risponde _run_map_reduce. Negli altri casi (locale, None, vuoto)
+        # il RAG semantico gira come oggi — nessuna rete tolta.
+        intents = ctx.metadata.get("intents")
+        if isinstance(intents, set) and (intents & _MAPREDUCE_INTENTS) and (
+            Intent.FILE_LOCAL not in intents
+        ):
+            return
         rag_files = ctx.metadata.get("rag_files") or []
         if not rag_files:
             return
@@ -1182,6 +1219,58 @@ class Orchestrator:
             "orchestrator._run_file_rag | chunk_iniettati={} files={}",
             len(all_chunks), len(rag_files),
         )
+
+    async def _run_map_reduce(self, ctx: AssistantContext) -> None:
+        """
+        Per gli intenti FILE_GLOBAL/STRUCTURAL/POSITIONAL: scandisce il documento
+        a blocchi (on-demand) e inietta la sintesi nel system prompt; poi il
+        modello principale streamma la risposta finale. Best-effort: non solleva.
+        Su intents None (classificatore fallito) NON parte: copre il RAG semantico.
+        """
+        if self._file_rag is None or self._map_reduce is None:
+            return
+        intents = ctx.metadata.get("intents")
+        if not isinstance(intents, set):
+            return
+        mr = intents & _MAPREDUCE_INTENTS
+        if not mr:
+            return
+        rag_files = ctx.metadata.get("rag_files") or []
+        if not rag_files:
+            return
+        query = ctx.user_text
+        if not query.strip():
+            return
+
+        positional_only = mr == {Intent.FILE_POSITIONAL}
+        t0 = time.monotonic()
+        blocks: list[dict] = []
+        for f in rag_files:
+            try:
+                chunks = await self._file_rag.get_ordered_chunks(f["file_id"])
+            except Exception as exc:
+                logger.warning(
+                    "orchestrator._run_map_reduce | chunks '{}': {}", f.get("source"), exc
+                )
+                continue
+            fb = list(FileRAG.iter_blocks(chunks, _MAPREDUCE_BLOCK_CHARS))
+            if positional_only and len(fb) > 2 * _POSITIONAL_BLOCKS:
+                fb = fb[:_POSITIONAL_BLOCKS] + fb[-_POSITIONAL_BLOCKS:]
+            blocks.extend(fb)
+
+        if not blocks:
+            return
+        try:
+            result = await self._map_reduce.run(question=query, blocks=blocks)
+        except Exception as exc:
+            logger.warning("orchestrator._run_map_reduce | motore: {}", exc)
+            return
+        ctx.set_timing("map_reduce", (time.monotonic() - t0) * 1000)
+
+        block = _format_map_reduce_block(result.content)
+        if block:
+            ctx.system_prompt = (ctx.system_prompt or "") + block
+        logger.info("orchestrator._run_map_reduce | {}", result.to_log_dict())
 
     async def _classify_intents(self, ctx: AssistantContext) -> None:
         """
