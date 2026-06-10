@@ -176,7 +176,24 @@ def create_app(ws_manager: "WSManager") -> tuple[FastAPI, dict]:
                 "stats":loop.stats.to_log_dict(),
             }))
         try:
-            while True: await ws.receive_text()
+            while True:
+                raw = await ws.receive_text()
+                if not raw or raw == "ping":
+                    continue
+                try:
+                    msg = json.loads(raw)
+                except Exception:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                # Push-to-talk pilotato dal browser (keydown/keyup): il client
+                # confronta il tasto in JS e ci manda solo down/up.
+                if msg.get("type") == "ptt":
+                    lp: "UIBridge | None" = state["loop"]
+                    if lp is not None:
+                        act = msg.get("action")
+                        if act == "down": lp.ptt_down()
+                        elif act == "up": lp.ptt_up()
         except (WebSocketDisconnect, Exception): pass
         finally: ws_manager.disconnect(ws)
 

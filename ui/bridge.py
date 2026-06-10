@@ -56,6 +56,11 @@ class UIBridge(VoiceLoop):
         self._ws = ws_manager
         self._ptt_key_str = ptt_key
         self._ptt_key_obj = _resolve_key(ptt_key)
+        # PTT pilotato dal browser via WebSocket (keydown/keyup) invece del
+        # listener globale pynput: quest'ultimo, col backend X11/Xlib, non
+        # riceve eventi sotto Wayland. Il frontend sa già qual è il tasto
+        # (lo confronta in JS) e ci notifica down/up; qui basta un Event.
+        self._ptt_held = asyncio.Event()
         # Le latenze (_last_stt_ms / _last_llm_ms / _last_tts_ms) sono
         # definite e popolate da VoiceLoop; qui le leggiamo soltanto.
 
@@ -470,6 +475,14 @@ class UIBridge(VoiceLoop):
     @property
     def ptt_key(self): return self._ptt_key_str
 
+    # Invocati dall'handler WebSocket (stesso event loop): segnalano che il
+    # tasto PTT è premuto/rilasciato. _run_ptt aspetta questo Event.
+    def ptt_down(self) -> None:
+        self._ptt_held.set()
+
+    def ptt_up(self) -> None:
+        self._ptt_held.clear()
+
     async def broadcast_init(self) -> None:
         """
         Invia a TUTTI i client WS connessi il payload 'init' completo.
@@ -617,17 +630,12 @@ class UIBridge(VoiceLoop):
 
     async def _run_ptt(self) -> None:
         import numpy as np, sounddevice as sd
-        from pynput import keyboard as kb
-        loop = asyncio.get_running_loop()
-        held = asyncio.Event()
-        def match(k): return self._ptt_key_obj is not None and k == self._ptt_key_obj
-        def on_press(k):
-            if match(k): loop.call_soon_threadsafe(held.set)
-        def on_release(k):
-            if match(k): loop.call_soon_threadsafe(held.clear)
-        listener = kb.Listener(on_press=on_press, on_release=on_release)
-        listener.start()
-        logger.info("ui.bridge | PTT attivo — tasto: '{}'", self._ptt_key_str)
+        # Niente listener globale pynput (backend X11/Xlib → muto su Wayland):
+        # il tasto premuto/rilasciato arriva dal browser via WS e pilota
+        # _ptt_held (ptt_down/ptt_up). Stesso event loop, nessun thread.
+        held = self._ptt_held
+        held.clear()
+        logger.info("ui.bridge | PTT attivo (WS) — tasto: '{}'", self._ptt_key_str)
         try:
             while not self._stop_event.is_set():
                 try: await asyncio.wait_for(held.wait(), timeout=0.5)
@@ -657,4 +665,4 @@ class UIBridge(VoiceLoop):
                         except asyncio.QueueFull: pass
                 except Exception as e:
                     self._stats.stt_errors += 1; logger.error("ui.bridge | STT: {}", e)
-        finally: listener.stop()
+        finally: held.clear()

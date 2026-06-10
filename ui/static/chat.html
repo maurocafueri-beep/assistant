@@ -1092,7 +1092,15 @@ async function toggleTTS(){
 $('sel-tts').addEventListener('click',e=>{e.stopPropagation();toggleTTS()});
 
 /* PTT */
-function setPTT(k){const d=k.toUpperCase().replace('_L','←').replace('_R','→');pttCur.textContent=d}
+let pttKey='space',pttHeld=false;
+function setPTT(k){pttKey=k;const d=k.toUpperCase().replace('_L','←').replace('_R','→');pttCur.textContent=d}
+/* Tieni premuto il tasto PTT → invia down/up al backend via WS (finestra in
+   focus). Sostituisce il listener globale pynput, muto su Wayland. */
+function pttSend(a){if(ws&&ws.readyState===WebSocket.OPEN){try{ws.send(JSON.stringify({type:'ptt',action:a}))}catch(e){}}}
+function pttTyping(){const a=document.activeElement;return a===itxt||a===palIn}
+document.addEventListener('keydown',e=>{if(capPTT||palOpen||pttHeld||e.repeat||pttTyping())return;if(mapKey(e)!==pttKey)return;e.preventDefault();pttHeld=true;pttSend('down')},true);
+document.addEventListener('keyup',e=>{if(!pttHeld)return;if(mapKey(e)!==pttKey)return;e.preventDefault();pttHeld=false;pttSend('up')},true);
+window.addEventListener('blur',()=>{if(pttHeld){pttHeld=false;pttSend('up')}});
 function mapKey(e){const m={' ':'space','F1':'f1','F2':'f2','F3':'f3','F4':'f4','F5':'f5','F6':'f6','F7':'f7','F8':'f8','F9':'f9','F10':'f10','F11':'f11','F12':'f12','Control':'ctrl_l','Shift':'shift_l','Alt':'alt_l','CapsLock':'caps_lock','Tab':'tab','Insert':'insert','ScrollLock':'scroll_lock','Pause':'pause','NumLock':'num_lock'};return m[e.key]||(e.key.length===1?e.key.toLowerCase():null)}
 function startCap(){capPTT=true;imic.classList.add('cap');pttCur.textContent='premi un tasto…';const ok=e=>{e.preventDefault();e.stopPropagation();const r=mapKey(e);if(!r)return;capPTT=false;imic.classList.remove('cap');document.removeEventListener('keydown',ok,true);setPTT(r);fetch('/api/ptt-key',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:r})}).catch(()=>{});showToast('PTT → '+r.toUpperCase())};document.addEventListener('keydown',ok,true);const cx=()=>{if(!capPTT)return;capPTT=false;imic.classList.remove('cap');document.removeEventListener('keydown',ok,true)};setTimeout(()=>document.addEventListener('click',cx,{once:true}),50)}
 imic.addEventListener('click',e=>{e.stopPropagation();if(!capPTT)startCap()});
