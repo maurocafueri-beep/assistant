@@ -60,6 +60,7 @@ from modules.personality import PersonalityManager
 from modules.web_search import SearXNGClient
 from modules.file_analysis import AnalysisResult, FileAnalyzer
 from modules.file_rag import FileRAG
+from modules.intent import Intent, IntentClassifier
 
 
 # ---------------------------------------------------------------------------
@@ -512,6 +513,7 @@ class Orchestrator:
         self._stt = self._tts = self._web_search = None
         self._file_analyzer = None
         self._file_rag = None
+        self._intent_classifier = None
         self._loaded = False
         logger.info("orchestrator | chiuso")
 
@@ -530,6 +532,9 @@ class Orchestrator:
 
         # --- LLM (httpx, leggero) ---
         self._llm = OllamaClient()
+
+        # --- Classificatore di intenti (gira sul modello chat, gia' in VRAM) ---
+        self._intent_classifier = IntentClassifier(self._llm)
 
         # --- Personality (YAML, veloce) ---
         self._personality = PersonalityManager(default_name=self._personality_name)
@@ -769,6 +774,10 @@ class Orchestrator:
         # 4.4 File analysis (se il testo utente cita path con estensione
         # supportata + tool consentito dal profilo)
         await self._run_file_analysis(ctx)
+
+        # 4.42 Classificazione intenti del turno: instrada il web (e, dagli stadi
+        # successivi, i percorsi sui file). Popola ctx.metadata["intents"].
+        await self._classify_intents(ctx)
 
         # 4.45 File RAG: recupera passaggi rilevanti dai file grandi indicizzati
         # (di questo turno o di turni precedenti della sessione)
@@ -1174,6 +1183,22 @@ class Orchestrator:
             len(all_chunks), len(rag_files),
         )
 
+    async def _classify_intents(self, ctx: AssistantContext) -> None:
+        """
+        Classifica la query del turno e parcheggia il risultato in
+        ctx.metadata["intents"]: set[Intent] (riuscita, anche vuoto) oppure None
+        (fallita -> i consumatori usano il fallback). Va chiamato DOPO
+        _run_file_analysis, cosi' has_file vede anche il file appena caricato.
+        Non fatale: senza classificatore parcheggia None.
+        """
+        if not self._intent_classifier:
+            ctx.metadata["intents"] = None
+            return
+        has_file = bool(self._session_rag_files.get(ctx.session_id))
+        ctx.metadata["intents"] = await self._intent_classifier.classify(
+            ctx.user_text, has_file=has_file,
+        )
+
     async def _run_web_search(self, ctx: AssistantContext) -> None:
         """
         Se il testo utente contiene una keyword-trigger e il profilo attivo
@@ -1186,8 +1211,14 @@ class Orchestrator:
         if not self._web_search:
             return
 
-        # Trigger: keyword nel testo utente
-        if not _should_search(ctx.user_text):
+        # Trigger: intento WEB_SEARCH dal classificatore; se la classificazione
+        # e' fallita (None), fallback all'euristica keyword.
+        intents = ctx.metadata.get("intents")
+        if intents is None:
+            triggered = _should_search(ctx.user_text)
+        else:
+            triggered = Intent.WEB_SEARCH in intents
+        if not triggered:
             return
 
         # Permesso: il profilo attivo deve abilitare il tool
