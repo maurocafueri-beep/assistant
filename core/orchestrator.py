@@ -1283,7 +1283,12 @@ class Orchestrator:
         if not self._intent_classifier:
             ctx.metadata["intents"] = None
             return
-        has_file = bool(self._session_rag_files.get(ctx.session_id))
+        # I file vivono in ctx.metadata["rag_files"] (stessa fonte di
+        # _run_file_rag/_run_map_reduce), gia' popolata da _run_file_analysis in
+        # questo turno: cosi' has_file e' corretto anche al PRIMO turno con un
+        # file appena caricato (self._session_rag_files si aggiorna solo a fine
+        # turno, sarebbe in ritardo).
+        has_file = bool(ctx.metadata.get("rag_files"))
         ctx.metadata["intents"] = await self._intent_classifier.classify(
             ctx.user_text, has_file=has_file,
         )

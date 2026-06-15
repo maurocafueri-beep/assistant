@@ -314,22 +314,22 @@ class TestClassifyIntents:
 
     async def test_popola_metadata_has_file_false(self):
         orch = Orchestrator.__new__(Orchestrator)
-        orch._session_rag_files = {}
         clf = MagicMock()
         clf.classify = AsyncMock(return_value={Intent.WEB_SEARCH})
         orch._intent_classifier = clf
-        ctx = make_ctx(user_text="q", session_id="s1")
+        ctx = make_ctx(user_text="q", session_id="s1")   # niente rag_files
         await orch._classify_intents(ctx)
         assert ctx.metadata["intents"] == {Intent.WEB_SEARCH}
         assert clf.classify.call_args.kwargs["has_file"] is False
 
     async def test_has_file_true_con_rag_files(self):
         orch = Orchestrator.__new__(Orchestrator)
-        orch._session_rag_files = {"s1": [{"file_id": "x"}]}
         clf = MagicMock()
         clf.classify = AsyncMock(return_value=set())
         orch._intent_classifier = clf
-        ctx = make_ctx(user_text="q", session_id="s1")
+        # I file vivono in ctx.metadata["rag_files"] (popolati da file_analysis).
+        ctx = make_ctx(user_text="q", session_id="s1",
+                       metadata={"rag_files": [{"file_id": "x"}]})
         await orch._classify_intents(ctx)
         assert clf.classify.call_args.kwargs["has_file"] is True
 
