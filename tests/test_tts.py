@@ -229,22 +229,18 @@ class TestQwen3TTSInit:
         assert mock_tts.language    == "it"
         assert mock_tts.sample_rate == OUTPUT_SAMPLE_RATE
 
-    def test_not_initialized_raises_synthesize(self):
-        import asyncio
+    async def test_not_initialized_raises_synthesize(self):
         tts = Qwen3TTS.__new__(Qwen3TTS)
         tts._http = None
         with pytest.raises(RuntimeError, match="non inizializzato"):
-            asyncio.get_event_loop().run_until_complete(tts.synthesize("ciao"))
+            await tts.synthesize("ciao")
 
-    def test_not_initialized_raises_stream(self):
-        import asyncio
+    async def test_not_initialized_raises_stream(self):
         tts = Qwen3TTS.__new__(Qwen3TTS)
         tts._http = None
         async def dummy(c): pass
         with pytest.raises(RuntimeError, match="non inizializzato"):
-            asyncio.get_event_loop().run_until_complete(
-                tts.stream_sentences("x", dummy)
-            )
+            await tts.stream_sentences("x", dummy)
 
     def test_constructor_defaults_from_settings(self):
         from config.settings import settings
