@@ -595,6 +595,7 @@ def _make_orch_with_rag():
     """Orchestrator minimale con file_rag fake, senza load() completo."""
     orch = Orchestrator.__new__(Orchestrator)
     orch._file_rag = _FakeFileRAG()
+    orch._map_reduce = None      # spawn del precompute (5c) → no-op
     return orch
 
 

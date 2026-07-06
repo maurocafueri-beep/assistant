@@ -342,3 +342,45 @@ class TestClassifyIntents:
         await orch._classify_intents(ctx)
         assert ctx.metadata["intents"] is None
 
+
+class TestClassifyIntentsFastPath:
+    """Senza file e senza web consentito il classificatore non ha nulla da
+    decidere: intents=set() senza chiamata LLM."""
+
+    def _orch(self, allows: bool):
+        orch = Orchestrator.__new__(Orchestrator)
+        orch._model_overrides = {}
+        clf = MagicMock()
+        clf.classify = AsyncMock(return_value={Intent.WEB_SEARCH})
+        orch._intent_classifier = clf
+        orch._personality = _make_personality_mock(allows=allows)
+        return orch
+
+    async def test_niente_file_niente_web_salta_llm(self):
+        orch = self._orch(allows=False)
+        ctx = make_ctx(user_text="Ciao, come stai?", session_id="s1")
+        await orch._classify_intents(ctx)
+        orch._intent_classifier.classify.assert_not_called()
+        assert ctx.metadata["intents"] == set()
+
+    async def test_con_file_classifica_anche_senza_web(self):
+        orch = self._orch(allows=False)
+        ctx = make_ctx(user_text="riassumi", session_id="s1",
+                       metadata={"rag_files": [{"file_id": "x"}]})
+        await orch._classify_intents(ctx)
+        orch._intent_classifier.classify.assert_called_once()
+
+    async def test_web_consentito_classifica(self):
+        orch = self._orch(allows=True)
+        ctx = make_ctx(user_text="Ciao", session_id="s1")
+        await orch._classify_intents(ctx)
+        orch._intent_classifier.classify.assert_called_once()
+
+    async def test_profilo_illeggibile_classifica_comunque(self):
+        # In dubbio (personality rotta) niente fast-path: si classifica.
+        orch = self._orch(allows=True)
+        orch._personality = None
+        ctx = make_ctx(user_text="Ciao", session_id="s1")
+        await orch._classify_intents(ctx)
+        orch._intent_classifier.classify.assert_called_once()
+

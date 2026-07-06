@@ -16,12 +16,14 @@ from modules.map_reduce import (
 
 
 class _FakeEngine:
-    """Motore finto: risponde in base alla domanda, registra le domande viste."""
+    """Motore finto: risponde in base alla domanda, registra domande e modello."""
     def __init__(self):
         self.questions = []
+        self.models = []
 
-    async def run(self, *, question, blocks):
+    async def run(self, *, question, blocks, model=None):
         self.questions.append(question)
+        self.models.append(model)
         text = "RIASSUNTO" if question == SUMMARY_QUESTION else "CAPITOLI"
         return SimpleNamespace(content=text, n_blocks=len(blocks),
                                n_partials=1, n_llm_calls=1)
@@ -62,6 +64,8 @@ class TestPrecompute:
         assert pre.model == "gemma4"
         assert pre.computed_at > 0
         assert eng.questions == [SUMMARY_QUESTION, CHAPTERS_QUESTION]
+        # il modello attivo arriva a OGNI chiamata del motore (vincolo VRAM)
+        assert eng.models == ["gemma4", "gemma4"]
 
     async def test_precompute_then_store(self, tmp_path):
         eng = _FakeEngine()

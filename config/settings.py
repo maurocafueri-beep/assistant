@@ -274,6 +274,13 @@ class FileAnalysisSettings(BaseSettings):
     # tentare l'estrazione di file enormi (PDF da centinaia di MB, etc.).
     max_file_bytes: int = Field(50 * 1024 * 1024, ge=1024)
 
+    # Stadio 5c: all'indicizzazione di un file grande, precalcola in background
+    # riassunto e capitoli (map-reduce) nel PrecomputeStore, così le domande
+    # globali/strutturali successive sono istantanee. Condivide il modello
+    # attivo con la chat (niente modello extra in VRAM) ma ne accoda le
+    # chiamate: disattivare se i turni durante l'indicizzazione rallentano.
+    precompute_on_index: bool = True
+
     # Sicurezza: None = eredita da pc_control.safe_dirs (path consentiti).
     # Override esplicito via env: FILE_ANALYSIS_SAFE_DIRS="/home,/tmp"
     safe_dirs: list[str] | None = None

@@ -101,9 +101,13 @@ async def precompute(
     """
     Gira il motore per le domande anticipabili (riassunto + capitoli) e
     impacchetta i risultati. NON salva: il chiamante decide se e dove persistere.
+
+    `model` viene passato a ogni chiamata del motore (stesso vincolo VRAM di
+    orchestrator._run_map_reduce: sempre il modello attivo, mai il default .env)
+    oltre che registrato nei metadati del risultato.
     """
-    summary  = (await engine.run(question=SUMMARY_QUESTION,  blocks=blocks)).content
-    chapters = (await engine.run(question=CHAPTERS_QUESTION, blocks=blocks)).content
+    summary  = (await engine.run(question=SUMMARY_QUESTION,  blocks=blocks, model=model)).content
+    chapters = (await engine.run(question=CHAPTERS_QUESTION, blocks=blocks, model=model)).content
     return Precomputed(
         summary=summary, chapters=chapters, computed_at=time.time(), model=model,
     )

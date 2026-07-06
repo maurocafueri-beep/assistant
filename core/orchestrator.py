@@ -61,7 +61,7 @@ from modules.web_search import SearXNGClient
 from modules.file_analysis import AnalysisResult, FileAnalyzer
 from modules.file_rag import FileRAG
 from modules.intent import Intent, IntentClassifier
-from modules.map_reduce import MapReduceEngine
+from modules.map_reduce import MapReduceEngine, PrecomputeStore, precompute
 
 
 # ---------------------------------------------------------------------------
@@ -494,6 +494,12 @@ class Orchestrator:
         # del modello attivo vive qui, isolato per istanza di orchestratore.
         self._model_overrides: dict[ModelRole, str] = {}
 
+        # Stadio 5c — cache del precalcolo map-reduce (riassunto/capitoli) e
+        # task in background che la scrivono all'indicizzazione dei file.
+        # I riferimenti ai task vanno tenuti vivi (asyncio non li ancora).
+        self._precompute_store: Optional[PrecomputeStore] = None
+        self._bg_tasks: set["asyncio.Task"] = set()
+
     # -----------------------------------------------------------------------
     # Context manager
     # -----------------------------------------------------------------------
@@ -507,6 +513,14 @@ class Orchestrator:
 
     async def aclose(self) -> None:
         """Chiude tutte le risorse aperte."""
+        # Ferma gli eventuali precalcoli in background prima di chiudere i
+        # moduli su cui girano (LLM, file RAG).
+        for t in list(self._bg_tasks):
+            t.cancel()
+        if self._bg_tasks:
+            await asyncio.gather(*self._bg_tasks, return_exceptions=True)
+            self._bg_tasks.clear()
+
         tasks = []
         if self._llm:
             tasks.append(self._llm.aclose())
@@ -535,6 +549,7 @@ class Orchestrator:
         self._file_rag = None
         self._intent_classifier = None
         self._map_reduce = None
+        self._precompute_store = None
         self._loaded = False
         logger.info("orchestrator | chiuso")
 
@@ -559,6 +574,9 @@ class Orchestrator:
 
         # --- Motore map-reduce (scansione globale dei documenti) ---
         self._map_reduce = MapReduceEngine(self._llm)
+
+        # --- Cache del precalcolo map-reduce (stadio 5c, JSON su disco) ---
+        self._precompute_store = PrecomputeStore()
 
         # --- Personality (YAML, veloce) ---
         self._personality = PersonalityManager(default_name=self._personality_name)
@@ -789,30 +807,37 @@ class Orchestrator:
         # 2b. Sincronizza i file RAG della sessione → ctx (sync-in).
         self._sync_session_rag(ctx)
 
-        # 3. Memory RAG
-        await self._run_memory(ctx)
-
-        # 4. Personality
+        # 3. Personality: setta il system prompt base PRIMA degli step che vi
+        # appendono blocchi (file analysis, RAG, web) — apply_to_context non
+        # sovrascrive un prompt già valorizzato.
         self._personality.apply_to_context(ctx)
 
-        # 4.4 File analysis (se il testo utente cita path con estensione
-        # supportata + tool consentito dal profilo)
-        await self._run_file_analysis(ctx)
+        # 4. Prima ondata parallela: la memoria RAG (embed + chromadb) è
+        # indipendente dalla catena file analysis → classificazione intenti
+        # (che invece è sequenziale al suo interno: has_file dipende dai
+        # rag_files popolati dall'analisi). Modelli diversi (embed vs chat),
+        # Ollama le serve in concorrenza.
+        async def _analyze_then_classify() -> None:
+            # 4.4 File analysis (path citati nel testo + tool consentito)
+            await self._run_file_analysis(ctx)
+            # 4.42 Classificazione intenti: instrada web e percorsi file.
+            await self._classify_intents(ctx)
 
-        # 4.42 Classificazione intenti del turno: instrada il web (e, dagli stadi
-        # successivi, i percorsi sui file). Popola ctx.metadata["intents"].
-        await self._classify_intents(ctx)
+        await asyncio.gather(self._run_memory(ctx), _analyze_then_classify())
 
-        # 4.45 File RAG: recupera passaggi rilevanti dai file grandi indicizzati
-        # (di questo turno o di turni precedenti della sessione)
-        await self._run_file_rag(ctx)
-
-        # 4.47 Map-reduce on-demand: domande globali/strutturali/posizionali sul
-        # documento (instradate dal classificatore). Inietta la sintesi.
-        await self._run_map_reduce(ctx)
-
-        # 4.5 Web search (se trigger keyword + tool consentito dal profilo)
-        await self._run_web_search(ctx)
+        # 5. Seconda ondata parallela: tutti e tre dipendono dagli intenti ma
+        # non l'uno dall'altro (file RAG e map-reduce sono mutuamente esclusivi
+        # via gating; il web è I/O di rete). Ognuno appende il proprio blocco
+        # al system prompt senza await tra lettura e scrittura: niente lost
+        # update, al più l'ordine dei blocchi varia tra un turno e l'altro.
+        await asyncio.gather(
+            # 4.45 File RAG: passaggi rilevanti dai file grandi indicizzati
+            self._run_file_rag(ctx),
+            # 4.47 Map-reduce on-demand: domande globali/strutturali/posizionali
+            self._run_map_reduce(ctx),
+            # 4.5 Web search (intento WEB_SEARCH + tool consentito dal profilo)
+            self._run_web_search(ctx),
+        )
 
         # 5. Costruzione messaggi
         messages = _build_messages(ctx)
@@ -1156,6 +1181,9 @@ class Orchestrator:
             if res.file_id not in known_ids:
                 rag_files.append({"file_id": res.file_id, "source": source})
                 known_ids.add(res.file_id)
+                # Stadio 5c: precalcola riassunto/capitoli in background, così
+                # la prima domanda globale trova la cache già calda.
+                self._spawn_precompute(res.file_id, source, ctx)
 
         ctx.metadata["rag_files"] = rag_files
         ctx.set_timing("file_rag_index", (time.monotonic() - t0) * 1000)
@@ -1242,6 +1270,15 @@ class Orchestrator:
         if not query.strip():
             return
 
+        # Stadio 5c — prima il precalcolato: se la domanda è globale e/o
+        # strutturale e OGNI file ha una voce in cache, iniettiamo riassunto
+        # e/o capitoli già pronti senza rimettere in moto il motore (decine di
+        # chiamate LLM risparmiate). Il posizionale non è coperto dalla cache;
+        # cache parziale (anche un solo file scoperto) → si va di on-demand
+        # per tutti, così la sintesi resta coerente.
+        if self._try_precomputed(ctx, mr, rag_files):
+            return
+
         positional_only = mr == {Intent.FILE_POSITIONAL}
         t0 = time.monotonic()
         blocks: list[dict] = []
@@ -1278,6 +1315,82 @@ class Orchestrator:
             ctx.system_prompt = (ctx.system_prompt or "") + block
         logger.info("orchestrator._run_map_reduce | {}", result.to_log_dict())
 
+    def _try_precomputed(
+        self, ctx: AssistantContext, mr: "set[Intent]", rag_files: list[dict],
+    ) -> bool:
+        """
+        Stadio 5c: serve la richiesta dal PrecomputeStore se possibile.
+        True = blocco iniettato nel system prompt, il motore non serve.
+        Copre solo FILE_GLOBAL (riassunto) e FILE_STRUCTURAL (capitoli), e solo
+        se OGNI file della sessione ha in cache le parti richieste.
+        """
+        if self._precompute_store is None:
+            return False
+        if not mr or not (mr <= {Intent.FILE_GLOBAL, Intent.FILE_STRUCTURAL}):
+            return False
+
+        pieces: list[str] = []
+        for f in rag_files:
+            pre = self._precompute_store.load(f["file_id"])
+            if pre is None:
+                return False
+            parts: list[str] = []
+            if Intent.FILE_GLOBAL in mr and pre.summary:
+                parts.append(pre.summary)
+            if Intent.FILE_STRUCTURAL in mr and pre.chapters:
+                parts.append(pre.chapters)
+            if not parts:
+                return False
+            pieces.append("[{}]\n{}".format(f.get("source", "file"), "\n\n".join(parts)))
+
+        block = _format_map_reduce_block("\n\n".join(pieces))
+        if not block:
+            return False
+        ctx.system_prompt = (ctx.system_prompt or "") + block
+        ctx.set_timing("map_reduce", 0.0)
+        logger.info(
+            "orchestrator._run_map_reduce | cache precompute per {} file, motore saltato",
+            len(rag_files),
+        )
+        return True
+
+    def _spawn_precompute(self, file_id: str, source: str, ctx: AssistantContext) -> None:
+        """
+        Avvia in background il precalcolo (riassunto + capitoli) di un file
+        appena indicizzato, se non già in cache. Fire-and-forget: il turno
+        corrente non aspetta; il riferimento al task resta in _bg_tasks.
+        """
+        if self._map_reduce is None or self._file_rag is None or self._precompute_store is None:
+            return
+        if not getattr(settings.file_analysis, "precompute_on_index", True):
+            return
+        if self._precompute_store.has(file_id):
+            return
+        # Modello attivo del turno che ha caricato il file: stesso vincolo
+        # VRAM delle altre chiamate ausiliarie (mai il default .env).
+        model = self.active_model(ctx.model_role)
+        task = asyncio.create_task(self._precompute_file(file_id, source, model))
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+
+    async def _precompute_file(self, file_id: str, source: str, model: str) -> None:
+        """Corpo del precalcolo in background. Best-effort: logga, non solleva."""
+        try:
+            chunks = await self._file_rag.get_ordered_chunks(file_id)
+            blocks = list(FileRAG.iter_blocks(chunks, _MAPREDUCE_BLOCK_CHARS))
+            if not blocks:
+                return
+            pre = await precompute(self._map_reduce, blocks, model=model)
+            self._precompute_store.save(file_id, pre)
+            logger.info(
+                "orchestrator._precompute_file | '{}' pronto ({} blocchi)",
+                source, len(blocks),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("orchestrator._precompute_file | '{}' fallito: {}", source, exc)
+
     async def _classify_intents(self, ctx: AssistantContext) -> None:
         """
         Classifica la query del turno e parcheggia il risultato in
@@ -1295,6 +1408,24 @@ class Orchestrator:
         # file appena caricato (self._session_rag_files si aggiorna solo a fine
         # turno, sarebbe in ritardo).
         has_file = bool(ctx.metadata.get("rag_files"))
+        # Fast-path: il classificatore instrada solo web e file. Senza file in
+        # sessione E con il tool web non consentito dal profilo attivo, non ha
+        # nulla da decidere: parcheggiamo set() (= "nessun intento") senza
+        # spendere una chiamata LLM. In dubbio (profilo illeggibile) si assume
+        # il web consentito e si classifica comunque: il permesso vero viene
+        # ricontrollato da _run_web_search.
+        if not has_file:
+            try:
+                web_allowed = self._personality.active.allows_tool(_WEB_SEARCH_TOOL)
+            except Exception:
+                web_allowed = True
+            if not web_allowed:
+                ctx.metadata["intents"] = set()
+                logger.debug(
+                    "orchestrator._classify_intents | fast-path: niente file, "
+                    "web non consentito — salto il classificatore"
+                )
+                return
         # Forza intent a girare sullo STESSO modello della chat che usa il
         # turno (active_model rispetta lo switch_model dalla UI), così non si
         # carica un secondo modello in VRAM solo per la classificazione: era
