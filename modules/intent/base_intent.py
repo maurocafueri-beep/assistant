@@ -67,7 +67,13 @@ class IntentClassifier:
         self._num_predict = num_predict
         self._temperature = temperature
 
-    async def classify(self, query: str, *, has_file: bool) -> "Optional[set[Intent]]":
+    async def classify(
+        self,
+        query: str,
+        *,
+        has_file: bool,
+        model: "Optional[str]" = None,
+    ) -> "Optional[set[Intent]]":
         if not query or not query.strip():
             return set()
 
@@ -76,9 +82,17 @@ class IntentClassifier:
             f"Richiesta: {query}"
         )
         try:
+            # `model`: l'orchestrator passa qui il modello attivo (quello
+            # scelto via UI/switch_model), così intent gira sullo STESSO
+            # modello della chat e non ne carica un secondo a ogni turno.
+            # Il default _model_for_role(CHAT) leggerebbe settings.ollama
+            # .chat_model dal .env ignorando lo switch runtime — su setup
+            # con poca VRAM questo causa thrashing tra due modelli ad ogni
+            # turno (es. 19s la prima volta che si caricava il 26B di .env).
             resp = await self._llm.chat(
                 [Message(role=Role.USER, content=user)],
                 ModelRole.CHAT,
+                model=model,
                 system=_SYSTEM,
                 options={
                     "think":       False,

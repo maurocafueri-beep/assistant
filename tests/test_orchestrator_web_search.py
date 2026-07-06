@@ -314,6 +314,7 @@ class TestClassifyIntents:
 
     async def test_popola_metadata_has_file_false(self):
         orch = Orchestrator.__new__(Orchestrator)
+        orch._model_overrides = {}
         clf = MagicMock()
         clf.classify = AsyncMock(return_value={Intent.WEB_SEARCH})
         orch._intent_classifier = clf
@@ -324,6 +325,7 @@ class TestClassifyIntents:
 
     async def test_has_file_true_con_rag_files(self):
         orch = Orchestrator.__new__(Orchestrator)
+        orch._model_overrides = {}
         clf = MagicMock()
         clf.classify = AsyncMock(return_value=set())
         orch._intent_classifier = clf

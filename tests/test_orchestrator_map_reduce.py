@@ -40,6 +40,7 @@ def _fake_result(content="SINTESI GLOBALE"):
 
 def _orch_with_engine(chunks, result=None):
     orch = Orchestrator.__new__(Orchestrator)
+    orch._model_overrides = {}
     orch._file_rag = MagicMock()
     orch._file_rag.get_ordered_chunks = AsyncMock(return_value=chunks)
     orch._map_reduce = MagicMock()

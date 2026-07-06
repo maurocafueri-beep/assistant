@@ -17,6 +17,7 @@ get_ordered_chunks -> iter_blocks -> run.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 from core.context import ModelRole
 from core.logger import logger
@@ -87,13 +88,29 @@ class MapReduceEngine:
         self._reduce_block_chars = reduce_block_chars
         self._temperature        = temperature
         self._calls              = 0
+        # Modello da usare per la `run` corrente. Permette all'orchestrator di
+        # forzare lo STESSO modello della chat (active_model) anche su map e
+        # reduce, evitando il caricamento parallelo del default da .env e il
+        # conseguente thrashing di VRAM su due modelli a ogni turno.
+        self._model_override: "Optional[str]" = None
 
-    async def run(self, *, question: str, blocks: list[dict]) -> MapReduceResult:
+    async def run(
+        self,
+        *,
+        question: str,
+        blocks: list[dict],
+        model: "Optional[str]" = None,
+    ) -> MapReduceResult:
         """
         map (un blocco per volta) + reduce gerarchico.
         `blocks` e' l'output di FileRAG.iter_blocks.
+
+        `model`: se passato, viene usato per OGNI chiamata LLM del map-reduce.
+        Default: lascia che `OllamaClient` risolva da settings — utile per i
+        test, scorretto in produzione con switch_model attivo via UI.
         """
         self._calls = 0
+        self._model_override = model
         n_blocks = len(blocks)
 
         # -- MAP (sequenziale) -------------------------------------------------
@@ -171,6 +188,7 @@ class MapReduceEngine:
         resp = await self._llm.chat(
             [Message(role=Role.USER, content=user)],
             ModelRole.CHAT,
+            model=self._model_override,
             system=system,
             options={
                 "think":       False,

@@ -18,6 +18,7 @@ import pytest
 
 from core.context import ModelRole
 from modules.llm import LLMResponse, Message, OllamaClient, Role
+from modules.llm.base_llm import _StripThink, _strip_think_tags
 
 
 # ---------------------------------------------------------------------------
@@ -350,3 +351,68 @@ class TestOllamaClientUtility:
 
         assert "qwen3:14b-q8_0"   in models
         assert "nomic-embed-text" in models
+
+
+# ---------------------------------------------------------------------------
+# Filtro <think>...</think> sui chunk LLM
+# ---------------------------------------------------------------------------
+
+class TestStripThink:
+    """
+    Copre i casi che il filtro deve gestire:
+      - chunk pulito (no-op),
+      - tag interi in un singolo chunk,
+      - tag spezzato su più chunk (sia apertura che chiusura),
+      - variante <thinking>...</thinking>,
+      - blocchi multipli,
+      - stream tronco a metà thinking,
+      - prefisso sospetto seguito da falso allarme.
+    """
+
+    @staticmethod
+    def _feed(chunks):
+        s = _StripThink(); out = ""
+        for c in chunks:
+            out += s.feed(c)
+        out += s.flush()
+        return out
+
+    def test_no_tags_is_noop(self):
+        assert self._feed(["ciao", " mondo"]) == "ciao mondo"
+
+    def test_whole_block_single_chunk(self):
+        assert self._feed(["A<think>X</think>B"]) == "AB"
+
+    def test_open_split_across_chunks(self):
+        assert self._feed(["A<", "think>X</think>B"]) == "AB"
+
+    def test_close_split_across_chunks(self):
+        assert self._feed(["A<think>X</thi", "nk>B"]) == "AB"
+
+    def test_thinking_variant(self):
+        assert self._feed(["A<thinking>X</thinking>B"]) == "AB"
+
+    def test_multiple_blocks(self):
+        assert self._feed(
+            ["A<think>x</think>B<thinking>y</thinking>C"]
+        ) == "ABC"
+
+    def test_unterminated_think_truncated(self):
+        # Stream interrotto mentre eravamo dentro <think>: nessun residuo emesso.
+        assert self._feed(["A<think>x"]) == "A"
+
+    def test_char_by_char(self):
+        assert self._feed(list("A<think>X</think>B")) == "AB"
+
+    def test_false_positive_partial_then_unrelated(self):
+        # Un prefisso che sembra l'inizio di un tag, ma poi prosegue diverso,
+        # deve essere emesso integro (non perso).
+        assert self._feed(["A<th", "ello"]) == "A<thello"
+
+    def test_less_than_not_a_tag(self):
+        assert self._feed(["a < b"]) == "a < b"
+
+    def test_single_shot_helper(self):
+        big = "A<think>ragionamento</think>B<thinking>altro</thinking>C"
+        assert _strip_think_tags(big) == "ABC"
+        assert _strip_think_tags("no tags here") == "no tags here"

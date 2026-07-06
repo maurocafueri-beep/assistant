@@ -1261,7 +1261,13 @@ class Orchestrator:
         if not blocks:
             return
         try:
-            result = await self._map_reduce.run(question=query, blocks=blocks)
+            # Stesso ragionamento di _classify_intents: map e reduce su tutte
+            # le chiamate devono usare il modello attivo, non il default .env.
+            result = await self._map_reduce.run(
+                question=query,
+                blocks=blocks,
+                model=self.active_model(ctx.model_role),
+            )
         except Exception as exc:
             logger.warning("orchestrator._run_map_reduce | motore: {}", exc)
             return
@@ -1289,8 +1295,15 @@ class Orchestrator:
         # file appena caricato (self._session_rag_files si aggiorna solo a fine
         # turno, sarebbe in ritardo).
         has_file = bool(ctx.metadata.get("rag_files"))
+        # Forza intent a girare sullo STESSO modello della chat che usa il
+        # turno (active_model rispetta lo switch_model dalla UI), così non si
+        # carica un secondo modello in VRAM solo per la classificazione: era
+        # la causa principale dei ~16s percepiti dopo lo switch dal default
+        # .env a un altro modello.
         ctx.metadata["intents"] = await self._intent_classifier.classify(
-            ctx.user_text, has_file=has_file,
+            ctx.user_text,
+            has_file=has_file,
+            model=self.active_model(ctx.model_role),
         )
 
     async def _run_web_search(self, ctx: AssistantContext) -> None:

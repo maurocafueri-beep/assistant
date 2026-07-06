@@ -110,6 +110,109 @@ def _token_counts(raw: dict) -> tuple[int, int, int]:
 
 
 # ---------------------------------------------------------------------------
+# Filtro tag <think>...</think>
+# ---------------------------------------------------------------------------
+# Difesa post-Ollama: alcuni modelli (anche con `think:false` sul payload)
+# possono comunque emettere blocchi di ragionamento dentro `message.content`,
+# inframmezzati come <think>...</think> o <thinking>...</thinking>. Quando
+# accade, l'utente li vede comparire nello stream come se fossero parte della
+# risposta. Questo filtro li rimuove in modo robusto allo streaming:
+#   - gestisce tag spezzati su più chunk;
+#   - non emette mai un suffisso che potrebbe essere il prefisso di un tag,
+#     finché il chunk successivo non chiarisce di cosa si tratti;
+#   - è un no-op sui modelli che non emettono questi tag.
+# Volutamente non tocca il campo `message.thinking`, che Ollama già separa
+# correttamente quando think=true: lì il filtro non serve.
+
+_THINK_OPEN  = ("<think>", "<thinking>")
+_THINK_CLOSE = ("</think>", "</thinking>")
+
+
+def _suffix_overlap(s: str, tag: str) -> int:
+    """Lunghezza massima k tale che s termini con tag[:k] (0 se nessun match)."""
+    m = min(len(s), len(tag))
+    for k in range(m, 0, -1):
+        if s.endswith(tag[:k]):
+            return k
+    return 0
+
+
+class _StripThink:
+    """
+    Filtro stateful che rimuove blocchi <think>...</think> e
+    <thinking>...</thinking> da uno stream di chunk di testo.
+
+    Uso:
+        s = _StripThink()
+        for chunk in chunks:
+            safe = s.feed(chunk); ... # emetti `safe` (potrebbe essere "")
+        tail = s.flush()              # emetti `tail` a fine stream
+    """
+
+    def __init__(self) -> None:
+        self._buf: str = ""
+        self._in_think: bool = False
+
+    def feed(self, chunk: str) -> str:
+        if not chunk:
+            return ""
+        self._buf += chunk
+        out: list[str] = []
+        while True:
+            if self._in_think:
+                pos, used = -1, ""
+                for tag in _THINK_CLOSE:
+                    i = self._buf.find(tag)
+                    if i >= 0 and (pos < 0 or i < pos):
+                        pos, used = i, tag
+                if pos < 0:
+                    # chiusura non ancora arrivata: scarta tutto tranne un
+                    # possibile prefisso di tag di chiusura in coda al buffer.
+                    keep = max(_suffix_overlap(self._buf, t) for t in _THINK_CLOSE)
+                    self._buf = self._buf[-keep:] if keep else ""
+                    break
+                self._buf = self._buf[pos + len(used):]
+                self._in_think = False
+                continue
+            # fuori da un blocco think
+            pos, used = -1, ""
+            for tag in _THINK_OPEN:
+                i = self._buf.find(tag)
+                if i >= 0 and (pos < 0 or i < pos):
+                    pos, used = i, tag
+            if pos < 0:
+                # nessun tag completo: emetti tutto tranne un eventuale
+                # prefisso di tag di apertura sospeso a fine buffer.
+                keep = max(_suffix_overlap(self._buf, t) for t in _THINK_OPEN)
+                if keep:
+                    out.append(self._buf[:-keep])
+                    self._buf = self._buf[-keep:]
+                else:
+                    out.append(self._buf)
+                    self._buf = ""
+                break
+            out.append(self._buf[:pos])
+            self._buf = self._buf[pos + len(used):]
+            self._in_think = True
+            continue
+        return "".join(out)
+
+    def flush(self) -> str:
+        """A fine stream: emetti il residuo se siamo fuori da un blocco think."""
+        if self._in_think:
+            self._buf = ""
+            return ""
+        tail, self._buf = self._buf, ""
+        return tail
+
+
+def _strip_think_tags(text: str) -> str:
+    """Versione single-shot per testo non in streaming (es. chat() non-stream)."""
+    s = _StripThink()
+    return s.feed(text) + s.flush()
+
+
+# ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
 
@@ -186,8 +289,12 @@ class OllamaClient:
 
         data = r.json()
         p, c, t = _token_counts(data)
+        # Filtro <think>: il modello, anche con think:false sul payload, a volte
+        # emette il ragionamento dentro `content`. Lo rimuoviamo qui in modo
+        # trasparente per ogni chiamante (intent, map_reduce, terminal_agent…).
+        # Sui modelli puliti è un no-op.
         return LLMResponse(
-            content=data.get("message", {}).get("content", ""),
+            content=_strip_think_tags(data.get("message", {}).get("content", "")),
             model=resolved,
             role=role,
             prompt_tokens=p,
@@ -219,6 +326,9 @@ class OllamaClient:
         payload  = self._build_payload(resolved, messages, options, system, stream=True)
 
         logger.debug("llm.stream | model={}", resolved)
+        # Filtro <think> streaming: vedi _StripThink. Gestisce tag spezzati su
+        # più chunk; sui modelli che non emettono <think> in content è inerte.
+        stripper = _StripThink()
         async with self._http.stream("POST", "/api/chat", json=payload) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
@@ -230,8 +340,13 @@ class OllamaClient:
                     continue
                 chunk = data.get("message", {}).get("content", "")
                 if chunk:
-                    yield chunk
+                    safe = stripper.feed(chunk)
+                    if safe:
+                        yield safe
                 if data.get("done"):
+                    tail = stripper.flush()
+                    if tail:
+                        yield tail
                     break
 
     # -- warmup ----------------------------------------------------------------
