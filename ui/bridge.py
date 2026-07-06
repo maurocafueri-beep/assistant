@@ -40,7 +40,7 @@ class WSManager:
         async with self._lock: clients = list(self._clients)
         for ws in clients:
             try: await ws.send_text(text)
-            except: dead.append(ws)
+            except Exception: dead.append(ws)
         for ws in dead: self.disconnect(ws)
     @property
     def n_clients(self): return len(self._clients)
@@ -288,7 +288,7 @@ class UIBridge(VoiceLoop):
     @property
     def active_personality(self) -> str:
         try: return self._orch._personality.active.name
-        except: return "default"
+        except Exception: return "default"
 
     def switch_personality(self, name: str) -> bool:
         try:
