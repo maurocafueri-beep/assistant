@@ -10,8 +10,9 @@
 #
 # Log: journalctl --user -u assistant-tts -f
 #
-# NB: --profile deve combaciare con TTS_VOICE nel .env; --gpu 1 riserva la
-# 3060 Ti al TTS (Ollama sta sulla GPU 0).
+# NB: --profile deve combaciare con TTS_VOICE nel .env. La GPU e la taglia
+# del modello arrivano dal .env (TTS_CUDA_DEVICE / TTS_MODEL_SIZE) via
+# EnvironmentFile — niente hardcoding qui.
 
 [Unit]
 Description=Assistant TTS Qwen3 server (GPU 1, porta 8765)
@@ -20,8 +21,13 @@ After=default.target
 [Service]
 Type=simple
 WorkingDirectory=%h/assistant
+# Legge il .env del progetto (TTS_MODEL_SIZE, TTS_WARMUP, …); "-" = non
+# fallire se il file manca.
+EnvironmentFile=-%h/assistant/.env
+# stdout non bufferizzato: senza, i print del server non arrivano al journal.
+Environment=PYTHONUNBUFFERED=1
 Environment=LD_LIBRARY_PATH=%h/assistant/venv-tts/lib/python3.12/site-packages/nvidia/cublas/lib:%h/assistant/venv-tts/lib/python3.12/site-packages/nvidia/cudnn/lib:%h/assistant/venv-tts/lib/python3.12/site-packages/nvidia/cuda_runtime/lib:%h/assistant/venv-tts/lib/python3.12/site-packages/nvidia/cufft/lib:%h/assistant/venv-tts/lib/python3.12/site-packages/nvidia/curand/lib
-ExecStart=%h/assistant/venv-tts/bin/python modules/tts/server.py --profile mercoledì --port 8765 --gpu 1
+ExecStart=%h/assistant/venv-tts/bin/python modules/tts/server.py --profile mercoledì --port 8765
 Restart=on-failure
 RestartSec=10
 # Il primo avvio a freddo (download HF + load modello) può superare i 5 min.

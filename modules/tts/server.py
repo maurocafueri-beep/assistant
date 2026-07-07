@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import argparse
 import io
+import os
 import sys
+import threading
 import time
 import wave
 from pathlib import Path
@@ -48,13 +50,29 @@ PROFILES_DIR    = PROJECT_ROOT / "data" / "voice_profiles"
 OUTPUT_SR       = 24_000
 DEFAULT_PROFILE = "mercoledì"
 
-# Parametri di generazione ottimali (testati)
+# Dimensione modello: 1.7B (qualità) o 0.6B (~2-3x più veloce in generazione,
+# stesso voice cloning). Default da env TTS_MODEL_SIZE, sovrascrivibile con
+# --model-size. Il client (base_tts.py) passa il valore di settings allo spawn.
+MODEL_IDS = {
+    "1.7B": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+    "0.6B": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+}
+
+# Parametri di generazione ottimali (testati SULL'1.7B). Sul 0.6B questa
+# combinazione manda il sampler in NaN (device-side assert): lì si usano i
+# default del vendor, che funzionano anche in ICL. Vedi _gen_kwargs().
 _GEN_KWARGS = dict(
     non_streaming_mode=True,
     do_sample=False,
     temperature=1.0,
     repetition_penalty=1.3,
 )
+
+
+def _gen_kwargs() -> dict:
+    if _model_size == "0.6B":
+        return {"non_streaming_mode": True}
+    return dict(_GEN_KWARGS)
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +82,9 @@ _GEN_KWARGS = dict(
 class SynthesizeRequest(BaseModel):
     text:     str
     language: str = "italian"
+    # Velocità del parlato (time-stretch a pitch invariato, applicato dopo la
+    # sintesi): 1.0 = naturale, 1.2 = 20% più veloce. Clampata a [0.5, 2.0].
+    speed:    float = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +95,13 @@ _model:          Any = None
 _voice_prompts:  dict[str, Any] = {}
 _active_profile: str = DEFAULT_PROFILE
 _model_name:     str = ""
+_model_size:     str = "1.7B"
+
+# La generazione satura la GPU: serializzarla evita OOM da richieste
+# concorrenti. /synthesize è un endpoint sync (FastAPI lo esegue in
+# threadpool), quindi /health e /profiles restano reattivi anche a sintesi
+# in corso — prima l'endpoint async bloccava l'intero event loop.
+_gen_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +118,39 @@ def _float32_to_wav_bytes(samples: np.ndarray, sample_rate: int) -> bytes:
         wf.setframerate(sample_rate)
         wf.writeframes(clipped.tobytes())
     return buf.getvalue()
+
+
+def _apply_speed(samples: np.ndarray, speed: float) -> np.ndarray:
+    """
+    Time-stretch a pitch invariato. speed>1 accorcia l'audio (parlato più
+    veloce). No-op per speed≈1 (audio bit-identico, nessun processing).
+
+    Percorso primario: sox `tempo -s` (WSOLA ottimizzato per il parlato,
+    qualità nettamente superiore). Fallback: phase vocoder di librosa, che
+    però sul parlato introduce artefatti udibili — meglio evitarlo.
+    """
+    speed = max(0.5, min(2.0, float(speed)))
+    if abs(speed - 1.0) < 1e-3 or len(samples) == 0:
+        return samples
+
+    import shutil
+    import subprocess
+    if shutil.which("sox"):
+        try:
+            raw_fmt = ["-t", "raw", "-r", str(OUTPUT_SR), "-e", "floating-point",
+                       "-b", "32", "-c", "1"]
+            proc = subprocess.run(
+                ["sox", *raw_fmt, "-", *raw_fmt, "-", "tempo", "-s", f"{speed}"],
+                input=samples.astype(np.float32).tobytes(),
+                capture_output=True, timeout=30, check=True,
+            )
+            return np.frombuffer(proc.stdout, dtype=np.float32).copy()
+        except Exception as exc:
+            print(f"[tts-server] ⚠ sox tempo fallito ({exc}), fallback librosa",
+                  file=sys.stderr)
+
+    import librosa
+    return librosa.effects.time_stretch(samples.astype(np.float32), rate=speed)
 
 
 def _load_ref_audio(path: Path, max_seconds: int = 16) -> tuple[np.ndarray, int]:
@@ -182,20 +243,30 @@ def _load_all_profiles(model) -> None:
 # Inizializzazione modello
 # ---------------------------------------------------------------------------
 
-def _init_model(profile: str, gpu: int) -> None:
-    global _model, _active_profile, _model_name
+def _init_model(profile: str, gpu: int, model_size: str = "1.7B") -> None:
+    global _model, _active_profile, _model_name, _model_size
+    _model_size = model_size
 
     from qwen_tts import Qwen3TTSModel
 
-    model_id = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+    model_id = MODEL_IDS.get(model_size, MODEL_IDS["1.7B"])
     device   = f"cuda:{gpu}" if torch.cuda.is_available() else "cpu"
+    # Lo 0.6B in float16 va in overflow (NaN nel tensore di probabilità →
+    # device-side assert alla prima sintesi): serve bfloat16. L'1.7B resta
+    # in float16, verificato stabile.
+    dtype = torch.bfloat16 if model_size == "0.6B" else torch.float16
+
+    # NB: NIENTE cudnn.benchmark qui. Con le shape variabili della
+    # generazione autoregressiva (ogni frase ha lunghezza diversa)
+    # l'autotuner ri-tara di continuo: misurato RTF 1.6-1.9 con benchmark
+    # attivo contro 0.49 senza, sullo stesso hardware e modello.
 
     print(f"[tts-server] caricamento {model_id} su {device}...")
     t0 = time.time()
 
     _model = Qwen3TTSModel.from_pretrained(
         model_id,
-        dtype=torch.float16,
+        dtype=dtype,
         device_map=device,
     )
     _model_name     = model_id
@@ -211,6 +282,24 @@ def _init_model(profile: str, gpu: int) -> None:
             "sintesi senza voice cloning",
             file=sys.stderr,
         )
+
+    # Warmup: la prima generazione paga kernel CUDA/autotuning (secondi).
+    # Una sintesi usa-e-getta al boot sposta quel costo fuori dal primo
+    # turno reale. Disattivabile con TTS_WARMUP=0.
+    if os.environ.get("TTS_WARMUP", "1") != "0":
+        try:
+            t0 = time.time()
+            # Frase di lunghezza realistica: l'autotuner cudnn si tara sulle
+            # shape effettive — con un "Ok." corto le prime frasi vere
+            # ripagherebbero il tuning (RTF ~1.8 invece di ~0.5 sulla 5080).
+            _generate(
+                "Questa è una frase di riscaldamento abbastanza lunga da "
+                "preparare i kernel per le frasi di una conversazione reale.",
+                "italian",
+            )
+            print(f"[tts-server] warmup completato ({time.time()-t0:.1f}s)")
+        except Exception as exc:
+            print(f"[tts-server] ⚠ warmup fallito: {exc}", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -262,8 +351,28 @@ async def switch_profile(profile_name: str) -> dict:
     return {"status": "ok", "profile": _active_profile}
 
 
+def _generate(text: str, language: str) -> tuple[Any, int]:
+    """Sintesi serializzata sulla GPU (vedi _gen_lock)."""
+    voice_prompt = _voice_prompts.get(_active_profile)
+    with _gen_lock:
+        if voice_prompt is not None:
+            return _model.generate_voice_clone(
+                text=text,
+                language=language,
+                voice_clone_prompt=voice_prompt,
+                **_gen_kwargs(),
+            )
+        # I modelli *-Base non hanno voci predefinite (generate_custom_voice
+        # è della variante CustomVoice): senza un profilo caricato non si può
+        # sintetizzare. Errore chiaro invece del crash vendor.
+        raise RuntimeError(
+            f"nessun profilo vocale caricato (attivo: '{_active_profile}') — "
+            "il modello Base richiede un profilo per il voice cloning"
+        )
+
+
 @app.post("/synthesize")
-async def synthesize(req: SynthesizeRequest) -> Response:
+def synthesize(req: SynthesizeRequest) -> Response:
     if _model is None:
         raise HTTPException(503, "Modello non inizializzato")
 
@@ -272,28 +381,13 @@ async def synthesize(req: SynthesizeRequest) -> Response:
         empty = _float32_to_wav_bytes(np.zeros(100, dtype=np.float32), OUTPUT_SR)
         return Response(content=empty, media_type="audio/wav")
 
-    voice_prompt = _voice_prompts.get(_active_profile)
-
     try:
-        if voice_prompt is not None:
-            audios, sr = _model.generate_voice_clone(
-                text=text,
-                language=req.language,
-                voice_clone_prompt=voice_prompt,
-                **_GEN_KWARGS,
-            )
-        else:
-            # Fallback senza voice cloning
-            audios, sr = _model.generate_custom_voice(
-                text=text,
-                speaker="aiden",
-                language=req.language,
-                non_streaming_mode=True,
-            )
+        audios, sr = _generate(text, req.language)
     except Exception as exc:
         raise HTTPException(500, f"Errore sintesi: {exc}") from exc
 
-    wav_bytes = _float32_to_wav_bytes(np.asarray(audios[0], dtype=np.float32), sr)
+    samples = _apply_speed(np.asarray(audios[0], dtype=np.float32), req.speed)
+    wav_bytes = _float32_to_wav_bytes(samples, sr)
     return Response(content=wav_bytes, media_type="audio/wav")
 
 
@@ -305,10 +399,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Qwen3-TTS Server")
     parser.add_argument("--profile", default=DEFAULT_PROFILE, help="Profilo vocale default")
     parser.add_argument("--port",    type=int, default=8765,   help="Porta HTTP")
-    parser.add_argument("--gpu",     type=int, default=1,      help="Indice GPU CUDA")
+    parser.add_argument("--gpu",     type=int,
+                        default=int(os.environ.get("TTS_CUDA_DEVICE", "1")),
+                        help="Indice GPU CUDA (default da env TTS_CUDA_DEVICE)")
+    parser.add_argument("--model-size", choices=sorted(MODEL_IDS),
+                        default=os.environ.get("TTS_MODEL_SIZE", "1.7B"),
+                        help="Dimensione modello (default da env TTS_MODEL_SIZE)")
     args = parser.parse_args()
 
-    _init_model(args.profile, args.gpu)
+    _init_model(args.profile, args.gpu, args.model_size)
 
     print(f"[tts-server] in ascolto su http://127.0.0.1:{args.port}")
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")

@@ -222,6 +222,7 @@ class Qwen3TTS:
         cuda_device_index: Optional[int] = None,
         port:              int   = 8765,
         server_timeout_s:  Optional[float] = None,
+        speed:             Optional[float] = None,
     ) -> None:
         self._profile           = profile or settings.tts.voice
         self._language          = language or getattr(settings.stt, "language", "it")
@@ -230,6 +231,9 @@ class Qwen3TTS:
         self._port             = port
         self._server_timeout_s = server_timeout_s if server_timeout_s is not None \
                                  else getattr(settings.tts, "server_timeout_s", 600.0)
+        # Velocità del parlato (time-stretch server-side a pitch invariato).
+        self._speed            = speed if speed is not None \
+                                 else getattr(settings.tts, "speed", 1.0)
         self._base_url         = f"http://127.0.0.1:{port}"
         self._process:   Optional[subprocess.Popen] = None
         self._http:      Optional[httpx.AsyncClient] = None
@@ -296,6 +300,7 @@ class Qwen3TTS:
             "--profile", self._profile,
             "--port",    str(self._port),
             "--gpu",     str(self._cuda_device_index),
+            "--model-size", getattr(settings.tts, "model_size", "1.7B"),
         ]
 
         logger.info(
@@ -338,7 +343,7 @@ class Qwen3TTS:
 
         resolved_lang = _resolve_language(language or self._language)
         t0 = time.perf_counter()
-        r  = await self._http.post("/synthesize", json={"text": text, "language": resolved_lang})
+        r  = await self._http.post("/synthesize", json={"text": text, "language": resolved_lang, "speed": self._speed})
         r.raise_for_status()
         inference_ms = (time.perf_counter() - t0) * 1000
 
@@ -400,7 +405,7 @@ class Qwen3TTS:
             if not sentence:
                 continue
             t0 = time.perf_counter()
-            r  = await self._http.post("/synthesize", json={"text": sentence, "language": resolved_lang})
+            r  = await self._http.post("/synthesize", json={"text": sentence, "language": resolved_lang, "speed": self._speed})
             r.raise_for_status()
             inference_ms = (time.perf_counter() - t0) * 1000
             wav_bytes = r.content
@@ -432,7 +437,7 @@ class Qwen3TTS:
             if not sentence:
                 continue
             t0 = time.perf_counter()
-            r  = await self._http.post("/synthesize", json={"text": sentence, "language": resolved_lang})
+            r  = await self._http.post("/synthesize", json={"text": sentence, "language": resolved_lang, "speed": self._speed})
             r.raise_for_status()
             inference_ms = (time.perf_counter() - t0) * 1000
             wav_bytes = r.content
