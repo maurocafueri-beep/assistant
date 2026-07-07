@@ -49,8 +49,8 @@ class OllamaSettings(BaseSettings):
     # Default = tag Ollama realmente installati. Override via .env
     # (OLLAMA_CHAT_MODEL, OLLAMA_CODE_MODEL, ...). Devono esistere su
     # `ollama list`, altrimenti ogni turno LLM fallisce.
-    chat_model: str = "VladimirGav/gemma4-26b-16GB-VRAM-Uncensored:latest"
-    code_model: str = "VladimirGav/gemma4-26b-16GB-VRAM-Uncensored:latest"
+    chat_model: str = "igorls/gemma-4-12B-it-qat-q4_0-unquantized-heretic:latest"
+    code_model: str = "igorls/gemma-4-12B-it-qat-q4_0-unquantized-heretic:latest"
     vision_model: str = "qwen3-vl:8b"
     embed_model: str = "nomic-embed-text"
     timeout: int = 120
@@ -117,6 +117,11 @@ class TTSSettings(BaseSettings):
     # il costo dei kernel CUDA/autotuning. Una sintesi usa-e-getta dopo il
     # boot toglie questo costo dalla prima risposta reale. Best-effort.
     warmup: bool = True
+    # Attesa massima per il boot del server TTS avviato come sottoprocesso.
+    # A cache HuggingFace calda bastano ~2-4 min; il PRIMO avvio su macchina
+    # nuova scarica anche i pesi (superava i vecchi 240s hardcoded). Con il
+    # servizio systemd assistant-tts attivo non si paga mai: il server c'è già.
+    server_timeout_s: float = Field(600.0, ge=30.0, alias="TTS_SERVER_TIMEOUT")
 
 class SpeakerSettings(BaseSettings):
     model_config = SettingsConfigDict(

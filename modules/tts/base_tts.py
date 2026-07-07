@@ -208,10 +208,11 @@ class Qwen3TTS:
         language:          Codice lingua ISO (default "it").
         cuda_device_index: Indice GPU CUDA (default da settings.tts.cuda_device_index).
         port:              Porta del server HTTP (default 8765).
-        server_timeout_s:  Timeout avvio server in secondi (default 240).
-                           Il modello Qwen3-TTS può impiegare 60-180s a
-                           caricare a freddo sulla 3060 Ti, lasciamo
-                           margine per evitare flakiness on cold start.
+        server_timeout_s:  Timeout avvio server in secondi (default da
+                           settings.tts.server_timeout_s, 600). Il modello
+                           Qwen3-TTS impiega 60-240s a caricare a freddo
+                           sulla 3060 Ti; al primissimo avvio scarica anche
+                           i pesi da HuggingFace, da cui il margine largo.
     """
 
     def __init__(
@@ -220,14 +221,15 @@ class Qwen3TTS:
         language:          Optional[str] = None,
         cuda_device_index: Optional[int] = None,
         port:              int   = 8765,
-        server_timeout_s:  float = 240.0,
+        server_timeout_s:  Optional[float] = None,
     ) -> None:
         self._profile           = profile or settings.tts.voice
         self._language          = language or getattr(settings.stt, "language", "it")
         self._cuda_device_index = cuda_device_index if cuda_device_index is not None \
                                   else getattr(settings.tts, "cuda_device_index", 1)
         self._port             = port
-        self._server_timeout_s = server_timeout_s
+        self._server_timeout_s = server_timeout_s if server_timeout_s is not None \
+                                 else getattr(settings.tts, "server_timeout_s", 600.0)
         self._base_url         = f"http://127.0.0.1:{port}"
         self._process:   Optional[subprocess.Popen] = None
         self._http:      Optional[httpx.AsyncClient] = None

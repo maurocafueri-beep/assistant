@@ -37,8 +37,7 @@ PY_BIN="${PY_BIN:-python}"     # python di sistema da usare per i venv
 # OLLAMA_VISION_MODEL): se qui manca il modello configurato, i turni chat
 # e i test d'integrazione falliscono con 404 da /api/chat.
 MODELS=(
-    "VladimirGav/gemma4-26b-16GB-VRAM-Uncensored:latest"
-    "gemma4:12b"
+    "igorls/gemma-4-12B-it-qat-q4_0-unquantized-heretic:latest"
     "nomic-embed-text"
     "qwen3-vl:8b"
 )
@@ -280,6 +279,16 @@ elif confirm "Creo venv-tts (server Qwen3-TTS da vendor/Qwen3-TTS, ~qualche GB)?
     "${TTS_VENV}/bin/pip" install --extra-index-url https://download.pytorch.org/whl/cu128 \
         -e "${PROJECT_DIR}/vendor/Qwen3-TTS" fastapi uvicorn torch==2.11.0 torchaudio==2.11.0
     ok "venv-tts pronto"
+fi
+
+# Server TTS come servizio utente systemd (sempre attivo, riavvio automatico
+# se muore — es. CUDA OOM). Vedi scripts/systemd/assistant-tts.service.
+if [[ -x "${TTS_VENV}/bin/python" ]] && confirm "Installo il server TTS come servizio utente systemd (assistant-tts)?"; then
+    mkdir -p "${HOME}/.config/systemd/user"
+    cp "${PROJECT_DIR}/scripts/systemd/assistant-tts.service" "${HOME}/.config/systemd/user/"
+    systemctl --user daemon-reload
+    systemctl --user enable --now assistant-tts
+    ok "assistant-tts attivo (journalctl --user -u assistant-tts -f per i log)"
 fi
 
 # Impostazioni UI personali (modello/voce/personalità/sessioni attive)
