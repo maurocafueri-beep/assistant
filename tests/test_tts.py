@@ -485,6 +485,7 @@ class TestQwen3TTSServerInfo:
 # ---------------------------------------------------------------------------
 
 @slow
+@pytest.mark.real_tts
 class TestQwen3TTSRealServer:
     async def test_context_manager(self):
         async with Qwen3TTS() as tts:

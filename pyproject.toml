@@ -23,4 +23,7 @@ log_cli = true
 log_cli_level = "INFO"
 markers = [
     "slow: test che richiedono servizi reali (SearXNG, Ollama, Whisper…). Skippati con SKIP_SLOW=1",
+    "real_ollama: richiede Ollama attivo col modello embed; auto-skip se non risponde (conftest)",
+    "real_ollama_chat: come real_ollama ma richiede anche il modello chat (turni LLM reali)",
+    "real_tts: richiede il server TTS Qwen3 attivo; auto-skip se non risponde (conftest)",
 ]

@@ -579,6 +579,7 @@ class TestOrchestratorStatus:
 # ---------------------------------------------------------------------------
 
 @slow
+@pytest.mark.real_ollama_chat
 class TestOrchestratorIntegration:
     """Richiedono Ollama attivo, ChromaDB su disco, Whisper, server TTS."""
 

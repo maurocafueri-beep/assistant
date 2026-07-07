@@ -480,6 +480,7 @@ class TestChromaClear:
 # ---------------------------------------------------------------------------
 
 @slow
+@pytest.mark.real_ollama
 class TestMemoryManagerReal:
     """
     Test di integrazione end-to-end.
