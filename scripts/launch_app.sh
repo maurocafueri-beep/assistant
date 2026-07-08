@@ -21,4 +21,9 @@ export DISPLAY="${DISPLAY:-:1}"
 export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
 [ -f "$XAUTHORITY" ] || touch "$XAUTHORITY"
 
-exec venv-runtime/bin/python scripts/run_app.py "$@"
+# UI nativa Qt Quick di default; LEGACY_UI=1 per la vecchia webview
+# (che copre ancora modalità terminale e upload).
+if [ "${LEGACY_UI:-0}" = "1" ]; then
+    exec venv-runtime/bin/python scripts/run_app.py "$@"
+fi
+exec venv-runtime/bin/python scripts/run_native.py "$@"

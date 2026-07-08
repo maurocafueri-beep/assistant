@@ -581,7 +581,13 @@ class UIBridge(VoiceLoop):
         except Exception as exc:
             logger.error("ui.bridge | _process_turn fallito: {}", exc)
             print(f"\n  ⚠ Errore: {exc}")
+            self._emit({"type": "error", "source": "turn", "message": str(exc)})
         finally:
+            # Errori non fatali del turno (ctx.error: LLM/tool falliti dentro
+            # l'orchestratore): la UI li mostra nel pannello errori. La
+            # vecchia UI ignora i tipi sconosciuti: emissione innocua.
+            if ctx.error:
+                self._emit({"type": "error", "source": "turn", "message": str(ctx.error)})
             self._is_speaking = False
             if self._tts_last_play_end > 0:
                 self._echo_block_until = self._tts_last_play_end + _PTT_ECHO_GRACE_S
