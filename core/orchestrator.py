@@ -138,6 +138,27 @@ _WEBSEARCH_TRIGGERS: tuple[str, ...] = (
 )
 
 
+# Nome del tool pc_control (deve coincidere con allowed_tools nei profili).
+# Copre il percorso visivo: "guarda lo schermo" → screenshot → modello vision.
+_PC_CONTROL_TOOL = "pc_control"
+
+# Trigger del percorso visivo (euristica keyword, come i primi stadi del web).
+_SCREEN_TRIGGERS: tuple[str, ...] = (
+    "guarda lo schermo",
+    "guarda il mio schermo",
+    "guarda sullo schermo",
+    "sullo schermo",
+    "sul mio schermo",
+    "a schermo",
+    "cosa vedi",
+    "che cosa vedi",
+    "che vedi",
+    "leggi lo schermo",
+    "vedi lo schermo",
+    "descrivi lo schermo",
+)
+
+
 # Nome del tool file_analysis (deve coincidere con allowed_tools nei profili)
 _FILE_ANALYSIS_TOOL = "file_analysis"
 
@@ -313,6 +334,29 @@ def _format_map_reduce_block(content: str) -> str:
 # Helper — costruzione prompt
 # ---------------------------------------------------------------------------
 
+def _should_look_at_screen(text: str) -> bool:
+    """
+    Euristica leggera: True se il testo utente chiede di guardare lo schermo.
+    Gemella di _should_search (il classificatore potrà affinare in futuro).
+    """
+    if not text:
+        return False
+    low = text.lower()
+    return any(trigger in low for trigger in _SCREEN_TRIGGERS)
+
+
+def _format_screen_block(description: str) -> str:
+    """Blocco da iniettare nel system prompt con l'analisi dello schermo."""
+    description = (description or "").strip()
+    if not description:
+        return ""
+    return (
+        "\n\n---\nANALISI DELLO SCHERMO (screenshot appena catturato e "
+        "descritto dal modello visivo; usalo per rispondere alla domanda "
+        "dell'utente sullo schermo):\n" + description + "\n---\n"
+    )
+
+
 def _should_search(text: str) -> bool:
     """
     Euristica leggera: True se il testo utente contiene una delle
@@ -477,6 +521,7 @@ class Orchestrator:
         self._web_search:    Optional[SearXNGClient]     = None
         self._file_analyzer: Optional[FileAnalyzer]      = None
         self._file_rag:      Optional[FileRAG]           = None
+        self._pc_control:    Optional[Any]               = None  # HyprlandPCControl
 
         self._loaded: bool = False
 
@@ -546,6 +591,7 @@ class Orchestrator:
         self._llm = self._memory = self._personality = None
         self._stt = self._tts = self._web_search = None
         self._file_analyzer = None
+        self._pc_control = None
         self._file_rag = None
         self._intent_classifier = None
         self._map_reduce = None
@@ -654,6 +700,22 @@ class Orchestrator:
                     "orchestrator | file_rag non disponibile: {} — continuo senza", exc
                 )
                 self._file_rag = None
+
+        # --- PC control (binari di sistema, costo zero in caricamento) ---
+        # Abilita il percorso visivo "guarda lo schermo" → screenshot →
+        # modello vision. Best-effort: senza Hyprland/grim resta spento.
+        try:
+            from modules.pc_control import HyprlandPCControl
+            if HyprlandPCControl.available():
+                self._pc_control = HyprlandPCControl()
+                logger.debug("orchestrator | pc_control inizializzato (hyprland)")
+            else:
+                logger.info(
+                    "orchestrator | pc_control non disponibile (binari mancanti) — continuo senza"
+                )
+        except Exception as exc:
+            logger.warning("orchestrator | pc_control non disponibile: {} — continuo senza", exc)
+            self._pc_control = None
 
         self._loaded = True
         elapsed = (time.monotonic() - t0) * 1000
@@ -837,6 +899,8 @@ class Orchestrator:
             self._run_map_reduce(ctx),
             # 4.5 Web search (intento WEB_SEARCH + tool consentito dal profilo)
             self._run_web_search(ctx),
+            # 4.6 Percorso visivo: "guarda lo schermo" → screenshot → vision
+            self._run_screen_look(ctx),
         )
 
         # 5. Costruzione messaggi
@@ -1435,6 +1499,68 @@ class Orchestrator:
             ctx.user_text,
             has_file=has_file,
             model=self.active_model(ctx.model_role),
+        )
+
+    async def _run_screen_look(self, ctx: AssistantContext) -> None:
+        """
+        Percorso visivo: se l'utente chiede dello schermo (euristica keyword)
+        e il profilo consente 'pc_control', cattura uno screenshot (grim),
+        lo descrive col modello vision (qwen3-vl) rispetto alla domanda, e
+        inietta l'analisi nel system prompt — poi il modello chat streamma
+        la risposta finale come per web search e memoria.
+
+        Registra l'invocazione in ctx.tool_calls. Errori non fatali.
+        """
+        if self._pc_control is None or self._llm is None:
+            return
+        if not _should_look_at_screen(ctx.user_text):
+            return
+        try:
+            allowed = self._personality.active.allows_tool(_PC_CONTROL_TOOL)
+        except Exception:
+            allowed = False
+        if not allowed:
+            logger.debug(
+                "orchestrator._run_screen_look | tool '{}' non consentito dal profilo '{}'",
+                _PC_CONTROL_TOOL, ctx.personality_name,
+            )
+            return
+
+        t0 = time.monotonic()
+        try:
+            png = await asyncio.to_thread(self._pc_control.take_screenshot)
+        except Exception as exc:
+            logger.warning("orchestrator._run_screen_look | screenshot fallito: {}", exc)
+            return
+
+        try:
+            resp = await self._llm.vision(
+                prompt=(
+                    "Descrivi cosa c'è in questo screenshot del desktop, "
+                    "concentrandoti su ciò che serve per rispondere alla "
+                    f"domanda dell'utente: \"{ctx.user_text}\". Riporta "
+                    "testi visibili rilevanti (titoli, errori, nomi file) "
+                    "in modo fedele."
+                ),
+                images=[png],
+            )
+        except Exception as exc:
+            logger.warning("orchestrator._run_screen_look | vision fallita: {}", exc)
+            return
+        ctx.set_timing("screen_look", (time.monotonic() - t0) * 1000)
+
+        block = _format_screen_block(resp.content)
+        if not block:
+            return
+        ctx.system_prompt = (ctx.system_prompt or "") + block
+        ctx.add_tool_call(
+            tool=_PC_CONTROL_TOOL,
+            args={"action": "take_screenshot", "png_bytes": len(png)},
+            result={"description_chars": len(resp.content)},
+        )
+        logger.info(
+            "orchestrator._run_screen_look | analisi iniettata ({} char, {} KB png)",
+            len(resp.content), len(png) // 1024,
         )
 
     async def _run_web_search(self, ctx: AssistantContext) -> None:

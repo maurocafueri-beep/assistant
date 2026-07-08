@@ -1,18 +1,17 @@
 """
 modules/pc_control
 ==================
-STATO: SOLO INTERFACCIA (nessuna implementazione concreta).
+Controllo del desktop: apri app/file, digita testo, screenshot, clipboard.
 
-Definisce l'interfaccia astratta BasePCControl (vedi base_pc_control.py)
-per il controllo del PC (apri app/file, digita testo, screenshot,
-clipboard). Non esiste ancora una sottoclasse concreta, quindi il modulo
-non è istanziabile né cablato nell'orchestratore. Roadmap.
+    from modules.pc_control import HyprlandPCControl
 
-NOTA SICUREZZA: i flag in config.settings.PCControlSettings
-(allow_delete, allow_sudo, safe_dirs) andranno rispettati
-dall'implementazione concreta quando verrà scritta.
+HyprlandPCControl è l'implementazione per Hyprland/Wayland (hyprctl, grim,
+wl-clipboard, xdg-open); HyprlandPCControl.available() dice se i binari ci
+sono. Lo screenshot alimenta il percorso visivo dell'orchestratore
+("guarda lo schermo" → qwen3-vl). Sicurezza: open_file rispetta
+settings.pc_control.safe_dirs, open_application accetta solo nomi-token.
 """
 
-from .base_pc_control import BasePCControl
+from .base_pc_control import BasePCControl, HyprlandPCControl
 
-__all__ = ["BasePCControl"]
+__all__ = ["BasePCControl", "HyprlandPCControl"]
