@@ -98,6 +98,32 @@ class STTSettings(BaseSettings):
     vad_threshold: float = Field(0.5, alias="VAD_THRESHOLD")
     vad_silence_duration: float = Field(0.8, alias="VAD_SILENCE_DURATION")
 
+class WakeWordSettings(BaseSettings):
+    """
+    Wake word hands-free (openWakeWord, CPU). Il voice loop la usa come
+    produttore di turni accanto al PTT: pronuncia la parola di attivazione,
+    parla, e la registrazione si chiude da sola al silenzio.
+    """
+    model_config = SettingsConfigDict(
+        env_prefix="WAKE_WORD_",
+        env_file=PROJECT_ROOT / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+    enabled: bool = True
+    # Nome di un modello pretrained di openwakeword ("hey_jarvis",
+    # "hey_mycroft", "alexa") oppure path a un .onnx addestrato custom.
+    model: str = "hey_jarvis"
+    # Soglia sullo score [0..1]: più alta = meno falsi positivi.
+    threshold: float = Field(0.5, ge=0.0, le=1.0)
+    # Dopo un trigger, ignora nuovi trigger per questo tempo.
+    cooldown_s: float = Field(2.0, ge=0.0)
+    # Endpointing della frase post-trigger: stop dopo questo silenzio…
+    silence_stop_s: float = Field(1.0, ge=0.2)
+    # …o comunque a questa durata massima.
+    max_command_s: float = Field(12.0, ge=1.0)
+
+
 class TTSSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="TTS_",
@@ -362,6 +388,7 @@ class Settings(BaseSettings):
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
     stt: STTSettings = Field(default_factory=STTSettings)
     tts: TTSSettings = Field(default_factory=TTSSettings)
+    wake_word: WakeWordSettings = Field(default_factory=WakeWordSettings)
     speaker: SpeakerSettings = Field(default_factory=SpeakerSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
     web_search: WebSearchSettings = Field(default_factory=WebSearchSettings)

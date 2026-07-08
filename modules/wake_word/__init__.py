@@ -1,11 +1,19 @@
 """
 modules/wake_word
 =================
-STATO: NON IMPLEMENTATO (placeholder roadmap).
+Rilevamento della parola di attivazione (hands-free) con openWakeWord.
 
-Modulo previsto per il rilevamento della wake word (es. "Hey assistente")
-prima di attivare STT. Al momento non espone alcuna classe e non è cablato
-nell'orchestratore né nel voice loop. Nessun import da qui è funzionale.
+    from modules.wake_word import WakeWordDetector, Endpointer
+
+Il detector gira su CPU (ONNX); il voice loop lo usa come produttore di
+turni accanto al PTT. Vedi base_wake_word.py per formato audio e uso.
 """
 
-__all__: list[str] = []
+from modules.wake_word.base_wake_word import (
+    FRAME_SAMPLES,
+    SAMPLE_RATE,
+    Endpointer,
+    WakeWordDetector,
+)
+
+__all__ = ["WakeWordDetector", "Endpointer", "SAMPLE_RATE", "FRAME_SAMPLES"]

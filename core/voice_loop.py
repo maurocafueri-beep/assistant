@@ -209,6 +209,7 @@ class VoiceLoop:
         self._orch: Optional[Orchestrator] = None
         self._stt:  Optional[Any]          = None
         self._tts:  Optional[Any]          = None
+        self._wake_detector: Optional[Any] = None  # WakeWordDetector (lazy)
 
         self._state:              str            = LoopState.IDLE
         self._tts_enabled:        bool           = True
@@ -281,6 +282,7 @@ class VoiceLoop:
 
         await self._load_stt()
         await self._load_tts()
+        await self._load_wake_word()
 
         self._loaded = True
         elapsed = (time.monotonic() - t0) * 1000
@@ -413,12 +415,36 @@ class VoiceLoop:
         self._tts = tts
         logger.debug("voice_loop | TTS caricato (profilo={})", tts.profile)
 
+    async def _load_wake_word(self) -> None:
+        """
+        Carica il detector openWakeWord (CPU) se abilitato. Best-effort:
+        senza pacchetto/modello il loop resta solo-PTT, nessun errore fatale.
+        Richiede lo STT (la frase post-trigger va trascritta).
+        """
+        if not getattr(settings.wake_word, "enabled", False):
+            return
+        if not self._stt:
+            logger.info("voice_loop | wake word saltato: STT non disponibile")
+            return
+        try:
+            from modules.wake_word import WakeWordDetector
+            det = WakeWordDetector()
+            await asyncio.get_running_loop().run_in_executor(None, det.load)
+            self._wake_detector = det
+        except Exception as exc:
+            logger.warning(
+                "voice_loop | wake word non disponibile ({}) — solo PTT", exc
+            )
+
     # API pubblica
 
     async def run(self) -> None:
         self._require_loaded()
         self._stop_event.clear()
         consumer_task = asyncio.create_task(self._turn_consumer())
+        wake_task: Optional[asyncio.Task] = None
+        if self._wake_detector is not None:
+            wake_task = asyncio.create_task(self._wake_producer())
         try:
             self._set_state(LoopState.LISTENING)
             await self._run_ptt()
@@ -428,11 +454,14 @@ class VoiceLoop:
             logger.error("voice_loop | PTT loop fallito: {}", exc)
         finally:
             self._stop_event.set()
-            consumer_task.cancel()
-            try:
-                await consumer_task
-            except asyncio.CancelledError:
-                pass
+            for t in (consumer_task, wake_task):
+                if t is None:
+                    continue
+                t.cancel()
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
 
     async def stop(self) -> None:
         logger.info("voice_loop | stop richiesto")
@@ -670,6 +699,114 @@ class VoiceLoop:
 
         finally:
             listener.stop()
+
+    # wake word (hands-free)
+
+    async def _wake_producer(self) -> None:
+        """
+        Produttore hands-free: microfono sempre aperto su un flusso dedicato,
+        ogni frame (80ms) passa dal WakeWordDetector (CPU). Al trigger
+        registra la frase con endpointing a energia (si ferma da sola al
+        silenzio), trascrive e accoda il turno nella stessa coda del PTT.
+
+        Convive col PTT: mentre l'assistente parla (o subito dopo, finestra
+        anti-eco) i frame vengono letti e scartati, così la voce del TTS
+        non può auto-attivare l'assistente. Le letture bloccanti girano in
+        thread (asyncio.to_thread) per non fermare l'event loop.
+        """
+        import numpy as np
+        import sounddevice as sd
+
+        from modules.wake_word import FRAME_SAMPLES, SAMPLE_RATE, Endpointer
+
+        det = self._wake_detector
+        try:
+            stream = sd.InputStream(
+                samplerate = SAMPLE_RATE,
+                channels   = 1,
+                dtype      = "int16",
+                blocksize  = FRAME_SAMPLES,
+            )
+            stream.start()
+        except Exception as exc:
+            logger.warning("voice_loop | wake word: microfono non apribile ({})", exc)
+            return
+
+        logger.info(
+            "voice_loop | wake word attivo — di' '{}' per parlare",
+            settings.wake_word.model.replace("_", " "),
+        )
+        print(f"\U0001f44b  Wake word attiva: di' «{settings.wake_word.model.replace('_', ' ')}»")
+
+        muted_prev = False
+        try:
+            while not self._stop_event.is_set():
+                data, _ = await asyncio.to_thread(stream.read, FRAME_SAMPLES)
+                frame = data[:, 0] if data.ndim > 1 else data
+
+                # Assistente che parla / anti-eco / PTT in corso: scarta.
+                muted = (
+                    self._is_speaking
+                    or time.monotonic() < self._echo_block_until
+                    or self._state == LoopState.RECORDING
+                )
+                if muted:
+                    muted_prev = True
+                    continue
+                if muted_prev:
+                    # Uscita dalla finestra muta: azzera i buffer del
+                    # detector, contengono la voce del TTS.
+                    det.reset()
+                    muted_prev = False
+
+                if not det.process(frame):
+                    continue
+
+                # --- Trigger: registra la frase fino al silenzio ---
+                logger.debug("voice_loop | wake word (score={:.2f})", det.last_score)
+                self._set_state(LoopState.RECORDING)
+                print("\r\U0001f399️  Ti ascolto...", end="", flush=True)
+
+                ep = Endpointer()
+                frames: list = []
+                while not self._stop_event.is_set():
+                    data, _ = await asyncio.to_thread(stream.read, FRAME_SAMPLES)
+                    frame = data[:, 0] if data.ndim > 1 else data
+                    frames.append(frame.copy())
+                    if ep.update(frame):
+                        break
+
+                print("\r" + " " * 24 + "\r", end="", flush=True)
+                self._set_state(LoopState.LISTENING)
+                det.reset()
+
+                if not frames:
+                    continue
+                audio_bytes = np.concatenate(frames, axis=0).tobytes()
+
+                try:
+                    result = await self._stt.transcribe_with_vad(audio_bytes)
+                except Exception as exc:
+                    self._stats.stt_errors += 1
+                    logger.error("voice_loop | wake word STT fallito: {}", exc)
+                    continue
+                if result.is_empty():
+                    logger.debug("voice_loop | wake word: nessun parlato dopo il trigger")
+                    continue
+                try:
+                    self._turn_queue.put_nowait(result)
+                except asyncio.QueueFull:
+                    logger.debug("voice_loop | wake word: queue piena — scartato")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("voice_loop | wake word producer fallito: {}", exc)
+        finally:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
 
     # consumer
 
