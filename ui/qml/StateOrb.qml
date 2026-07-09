@@ -114,8 +114,9 @@ Item {
     Text {
         anchors.centerIn: parent
         visible: orb.voiceState !== "thinking" && orb.voiceState !== "speaking"
-        text: "🎙"
-        font.pixelSize: 17
+        text: "🎙️"
+        font.pixelSize: 16
+        font.family: "Noto Color Emoji"
         opacity: (orb.voiceState === "loading" || orb.voiceState === "warmup") ? 0.4 : 0.95
     }
 

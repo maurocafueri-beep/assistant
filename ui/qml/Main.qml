@@ -1,11 +1,13 @@
-// ui/qml/Main.qml — finestra principale della UI nativa Qt Quick (v2).
-// Parità completa con la vecchia UI web: chat vocale in streaming, modalità
-// terminale agentica, upload file (drag&drop + dialog), pannello errori,
-// sessioni, selettori modello/profilo/voce, TTS, latenze. Tema scuro custom,
-// transizioni fluide. Parla col Python solo tramite `backend`.
+// ui/qml/Main.qml — finestra principale della UI nativa Qt Quick (v3).
+// Design "Liquid Glass" in stile macOS Tahoe: sfondo profondo con blob
+// colorati sfocati, pannelli di vetro flottanti (Glass.qml) con bordo
+// speculare e ombre morbide, raggi concentrici, animazioni elastiche.
+// Funzioni: chat vocale streaming, terminale agentico, upload, pannello
+// errori, sessioni, selettori, TTS, latenze. Parla solo con `backend`.
 
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQuick.Effects
 import QtQuick.Layouts
 import QtQuick.Dialogs
 
@@ -14,32 +16,32 @@ ApplicationWindow {
     visible: true
     width: 1100
     height: 740
-    minimumWidth: 760
-    minimumHeight: 500
+    minimumWidth: 780
+    minimumHeight: 520
     title: "Local Assistant"
-    color: theme.bg
+    // Trasparenza reale: il desktop si vede attraverso (compositor Wayland).
+    color: "transparent"
 
     // ── tema ────────────────────────────────────────────────────────
     QtObject {
         id: theme
-        readonly property color bg:        "#0d1117"
-        readonly property color surface:   "#161b22"
-        readonly property color surface2:  "#1f2630"
-        readonly property color border:    "#2d333b"
-        readonly property color text:      "#e6edf3"
-        readonly property color textDim:   "#8b949e"
-        readonly property color accent:    "#4dabf7"
-        readonly property color accent2:   "#9775fa"
-        readonly property color userBubble:"#1c3a5e"
-        readonly property color danger:    "#f03e3e"
-        readonly property color ok:        "#40c057"
-        readonly property int   radius:    12
+        readonly property color text:      "#f2f5f8"
+        readonly property color textDim:   "#9aa4b2"
+        readonly property color accent:    "#5ab7ff"
+        readonly property color accent2:   "#a78bfa"
+        readonly property color danger:    "#ff6b6b"
+        readonly property color ok:        "#51cf66"
+        readonly property color warn:      "#ffd43b"
+        readonly property int   radius:    22     // raggio pannelli
+        readonly property int   radiusIn:  16     // raggio elementi interni (concentrico)
+        readonly property color glassLine: Qt.rgba(1, 1, 1, 0.10)
+        readonly property color glassFill: Qt.rgba(1, 1, 1, 0.055)
     }
 
     // ── stato applicativo ───────────────────────────────────────────
     QtObject {
         id: appState
-        property string mode: "chat"              // chat | terminal
+        property string mode: "chat"
         property string voiceState: "loading"
         property string model: ""
         property string personality: ""
@@ -52,18 +54,16 @@ ApplicationWindow {
         property var    personalities: []
         property var    voices: []
         property var    models: []
-        property var    attachments: []           // path caricati, da inviare col messaggio
+        property var    attachments: []
         property var    terminalModels: []
         property string terminalModel: ""
     }
 
-    ListModel { id: chatModel }      // {role, text}
-    ListModel { id: errorModel }     // {time, source, message}
-    ListModel { id: terminalFeed }   // {kind, data(json)}
+    ListModel { id: chatModel }
+    ListModel { id: errorModel }
+    ListModel { id: terminalFeed }
 
-    function nowTime() {
-        return Qt.formatTime(new Date(), "HH:mm:ss")
-    }
+    function nowTime() { return Qt.formatTime(new Date(), "HH:mm:ss") }
 
     function pushError(source, message) {
         errorModel.insert(0, { time: nowTime(), source: source, message: message })
@@ -167,6 +167,14 @@ ApplicationWindow {
         }
     }
 
+    // ── sfondo: velo neutro traslucido (60% opaco) ──────────────────
+    // Il desktop filtra attraverso; con una windowrule Hyprland di blur
+    // si ottiene il vero effetto "frosted" dietro la finestra.
+    Rectangle {
+        anchors.fill: parent
+        color: Qt.rgba(0.075, 0.08, 0.09, 0.60)
+    }
+
     // ── drag & drop file (in chat) ──────────────────────────────────
     DropArea {
         anchors.fill: parent
@@ -178,11 +186,12 @@ ApplicationWindow {
         }
         Rectangle {
             anchors.fill: parent
+            anchors.margins: 10
             visible: parent.containsDrag
-            color: Qt.rgba(0.30, 0.67, 0.97, 0.08)
+            color: Qt.rgba(0.35, 0.72, 1.0, 0.07)
             border.color: theme.accent
             border.width: 2
-            radius: 8
+            radius: theme.radius
             z: 100
             Text {
                 anchors.centerIn: parent
@@ -204,37 +213,42 @@ ApplicationWindow {
         }
     }
 
-    // ── layout ──────────────────────────────────────────────────────
+    // ── layout: isole di vetro flottanti ────────────────────────────
     RowLayout {
         anchors.fill: parent
-        spacing: 0
+        anchors.margins: 14
+        spacing: 12
 
-        // ── colonna sessioni ────────────────────────────────────────
-        Rectangle {
+        // ── isola sessioni ──────────────────────────────────────────
+        Glass {
             id: sidebar
             Layout.fillHeight: true
-            Layout.preferredWidth: sidebarOpen && appState.mode === "chat" ? 232 : 0
+            Layout.preferredWidth: sidebarOpen && appState.mode === "chat" ? 230 : 0
             property bool sidebarOpen: true
-            color: theme.surface
+            glassRadius: theme.radius
             clip: true
+            visible: Layout.preferredWidth > 0
             Behavior on Layout.preferredWidth {
-                NumberAnimation { duration: 200; easing.type: Easing.OutCubic }
+                NumberAnimation { duration: 260; easing.type: Easing.OutCubic }
             }
 
             ColumnLayout {
                 anchors.fill: parent
-                anchors.margins: 10
-                spacing: 8
+                anchors.margins: 12
+                spacing: 10
 
                 Button {
                     Layout.fillWidth: true
-                    text: "+  Nuova chat"
+                    Layout.preferredHeight: 38
+                    text: "＋  Nuova chat"
                     font.pixelSize: 13
+                    scale: pressed ? 0.97 : 1.0
+                    Behavior on scale { SpringAnimation { spring: 4; damping: 0.3 } }
                     background: Rectangle {
-                        color: parent.hovered ? theme.surface2 : "transparent"
-                        border.color: theme.border
-                        radius: theme.radius
-                        Behavior on color { ColorAnimation { duration: 120 } }
+                        color: parent.hovered ? Qt.rgba(1,1,1,0.10) : theme.glassFill
+                        border.color: theme.glassLine
+                        radius: theme.radiusIn
+                        Behavior on color { ColorAnimation { duration: 140 } }
                     }
                     contentItem: Text {
                         text: parent.text; color: theme.text; font: parent.font
@@ -248,22 +262,24 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     model: appState.sessions
-                    spacing: 3
+                    spacing: 4
                     clip: true
 
                     delegate: Rectangle {
                         width: ListView.view.width
                         height: 40
-                        radius: theme.radius - 4
+                        radius: theme.radiusIn - 4
                         color: modelData.id === appState.sessionId
-                               ? theme.surface2
-                               : (sessionArea.containsMouse ? Qt.darker(theme.surface2, 1.25) : "transparent")
-                        Behavior on color { ColorAnimation { duration: 100 } }
+                               ? Qt.rgba(0.35, 0.72, 1.0, 0.14)
+                               : (sessionArea.containsMouse ? Qt.rgba(1,1,1,0.06) : "transparent")
+                        border.color: modelData.id === appState.sessionId
+                                      ? Qt.rgba(0.35, 0.72, 1.0, 0.30) : "transparent"
+                        Behavior on color { ColorAnimation { duration: 120 } }
 
                         RowLayout {
                             anchors.fill: parent
-                            anchors.leftMargin: 10
-                            anchors.rightMargin: 6
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 8
                             Text {
                                 Layout.fillWidth: true
                                 text: modelData.name || modelData.id
@@ -299,59 +315,61 @@ ApplicationWindow {
         ColumnLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            spacing: 0
+            spacing: 12
 
-            // ── barra superiore ─────────────────────────────────────
-            Rectangle {
+            // ── isola barra superiore ───────────────────────────────
+            Glass {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 52
-                color: theme.surface
+                Layout.preferredHeight: 58
+                glassRadius: theme.radius
 
                 RowLayout {
                     anchors.fill: parent
-                    anchors.leftMargin: 8
-                    anchors.rightMargin: 12
+                    anchors.leftMargin: 10
+                    anchors.rightMargin: 14
                     spacing: 10
 
                     ToolButton {
                         visible: appState.mode === "chat"
                         text: "☰"
-                        font.pixelSize: 16
+                        font.pixelSize: 15
                         contentItem: Text { text: parent.text; color: theme.textDim; font: parent.font
                                             horizontalAlignment: Text.AlignHCenter
                                             verticalAlignment: Text.AlignVCenter }
-                        background: Rectangle { color: parent.hovered ? theme.surface2 : "transparent"; radius: 8 }
+                        background: Rectangle {
+                            color: parent.hovered ? Qt.rgba(1,1,1,0.08) : "transparent"; radius: 10
+                        }
                         onClicked: sidebar.sidebarOpen = !sidebar.sidebarOpen
                     }
 
-                    // Selettore modalità chat/terminale
+                    // Selettore modalità (capsula con cursore elastico)
                     Rectangle {
-                        Layout.preferredWidth: 108
-                        Layout.preferredHeight: 30
-                        radius: 15
-                        color: theme.bg
-                        border.color: theme.border
+                        Layout.preferredWidth: 110
+                        Layout.preferredHeight: 32
+                        radius: 16
+                        color: Qt.rgba(0, 0, 0, 0.25)
+                        border.color: theme.glassLine
                         Rectangle {
                             id: modeThumb
-                            width: 52; height: 26; radius: 13
+                            width: 52; height: 28; radius: 14
                             y: 2
                             x: appState.mode === "chat" ? 2 : parent.width - width - 2
-                            color: theme.surface2
-                            border.color: theme.accent
-                            Behavior on x { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                            color: Qt.rgba(1, 1, 1, 0.12)
+                            border.color: Qt.rgba(0.35, 0.72, 1.0, 0.45)
+                            Behavior on x { SpringAnimation { spring: 3.5; damping: 0.28 } }
                         }
                         Row {
                             anchors.fill: parent
                             Item {
                                 width: parent.width / 2; height: parent.height
-                                Text { anchors.centerIn: parent; text: "💬"; font.pixelSize: 13
-                                       opacity: appState.mode === "chat" ? 1 : 0.45 }
+                                Text { anchors.centerIn: parent; text: "💬"; font.pixelSize: 13; font.family: "Noto Color Emoji"
+                                       opacity: appState.mode === "chat" ? 1 : 0.4 }
                                 MouseArea { anchors.fill: parent; onClicked: backend.setMode("chat") }
                             }
                             Item {
                                 width: parent.width / 2; height: parent.height
-                                Text { anchors.centerIn: parent; text: "⌨"; font.pixelSize: 13
-                                       opacity: appState.mode === "terminal" ? 1 : 0.45 }
+                                Text { anchors.centerIn: parent; text: ">_"; font.pixelSize: 11; font.bold: true; font.family: "monospace"; color: theme.text
+                                       opacity: appState.mode === "terminal" ? 1 : 0.4 }
                                 MouseArea { anchors.fill: parent; onClicked: backend.setMode("terminal") }
                             }
                         }
@@ -363,7 +381,9 @@ ApplicationWindow {
                         current: appState.mode === "terminal" ? appState.terminalModel
                                                               : appState.model
                         label: appState.mode === "terminal" ? "modello terminale" : "modello"
-                        Layout.preferredWidth: 280
+                        Layout.fillWidth: true
+                        Layout.maximumWidth: 238
+                        Layout.minimumWidth: 130
                         onPicked: (name) => appState.mode === "terminal"
                                             ? backend.terminalSwitchModel(name)
                                             : backend.switchModel(name)
@@ -373,7 +393,7 @@ ApplicationWindow {
                         comboModel: appState.personalities.map(p => p.name)
                         current: appState.personality
                         label: "profilo"
-                        Layout.preferredWidth: 120
+                        Layout.preferredWidth: 104
                         onPicked: (name) => backend.switchPersonality(name)
                     }
                     ThemedCombo {
@@ -381,76 +401,74 @@ ApplicationWindow {
                         comboModel: appState.voices
                         current: appState.voice
                         label: "voce"
-                        Layout.preferredWidth: 140
+                        Layout.preferredWidth: 120
                         onPicked: (name) => backend.switchVoice(name)
                     }
 
                     Item { Layout.fillWidth: true }
 
-                    // Latenze ultimo turno
-                    Row {
-                        spacing: 6
+                    Rectangle {
                         visible: appState.latency.total_ms !== undefined
-                        Repeater {
-                            model: [
-                                { k: "stt", v: appState.latency.stt_ms },
-                                { k: "llm", v: appState.latency.llm_ms },
-                                { k: "tts", v: appState.latency.tts_ms },
-                            ]
-                            delegate: Rectangle {
-                                visible: modelData.v !== undefined && modelData.v !== null && modelData.v > 0
-                                width: chipText.width + 14; height: 20; radius: 10
-                                color: theme.surface2
-                                Text {
-                                    id: chipText
-                                    anchors.centerIn: parent
-                                    text: modelData.k + " " + Math.round(modelData.v) + "ms"
-                                    color: theme.textDim
-                                    font.pixelSize: 10
-                                }
-                            }
+                        width: latText.width + 18; height: 24; radius: 12
+                        color: Qt.rgba(0, 0, 0, 0.25)
+                        border.color: theme.glassLine
+                        Text {
+                            id: latText
+                            anchors.centerIn: parent
+                            text: "⏱ " + (appState.latency.total_ms / 1000).toFixed(1) + "s"
+                            color: theme.textDim
+                            font.pixelSize: 11
                         }
+                        MouseArea {
+                            id: latArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                        }
+                        ToolTip.visible: latArea.containsMouse
+                        ToolTip.text: "stt " + Math.round(appState.latency.stt_ms || 0)
+                                      + "ms · llm " + Math.round(appState.latency.llm_ms || 0)
+                                      + "ms · tts " + Math.round(appState.latency.tts_ms || 0) + "ms"
                     }
 
-                    // Badge errori → apre il pannello
                     ToolButton {
                         id: errBtn
                         text: errorModel.count > 0 ? "⚠ " + errorModel.count : "⚠"
                         font.pixelSize: 12
                         contentItem: Text {
                             text: errBtn.text
-                            color: errorModel.count > 0 ? "#fab005" : theme.textDim
+                            color: errorModel.count > 0 ? theme.warn : theme.textDim
                             font: errBtn.font
                             horizontalAlignment: Text.AlignHCenter
                             verticalAlignment: Text.AlignVCenter
                         }
                         background: Rectangle {
-                            color: errBtn.hovered ? theme.surface2 : "transparent"; radius: 8
+                            color: errBtn.hovered ? Qt.rgba(1,1,1,0.08) : "transparent"; radius: 10
                         }
                         onClicked: errorPanel.open = !errorPanel.open
                     }
 
-                    // Toggle TTS
                     Switch {
                         id: ttsSwitch
                         checked: appState.ttsEnabled
                         onToggled: backend.setTtsEnabled(checked)
                         indicator: Rectangle {
-                            implicitWidth: 40; implicitHeight: 20; radius: 10
-                            color: ttsSwitch.checked ? theme.accent : theme.surface2
-                            border.color: theme.border
-                            Behavior on color { ColorAnimation { duration: 120 } }
+                            implicitWidth: 42; implicitHeight: 22; radius: 11
+                            color: ttsSwitch.checked ? Qt.rgba(0.35, 0.72, 1.0, 0.55)
+                                                     : Qt.rgba(0, 0, 0, 0.30)
+                            border.color: theme.glassLine
+                            Behavior on color { ColorAnimation { duration: 140 } }
                             Rectangle {
                                 x: ttsSwitch.checked ? parent.width - width - 2 : 2
                                 anchors.verticalCenter: parent.verticalCenter
-                                width: 16; height: 16; radius: 8
-                                color: theme.text
-                                Behavior on x { NumberAnimation { duration: 120 } }
+                                width: 18; height: 18; radius: 9
+                                color: "#ffffff"
+                                Behavior on x { SpringAnimation { spring: 4; damping: 0.32 } }
                             }
                         }
                         contentItem: Text {
                             text: "🔊"
                             font.pixelSize: 13
+                            font.family: "Noto Color Emoji"
                             color: ttsSwitch.checked ? theme.text : theme.textDim
                             leftPadding: ttsSwitch.indicator.width + 6
                             verticalAlignment: Text.AlignVCenter
@@ -459,36 +477,36 @@ ApplicationWindow {
                 }
             }
 
-            Rectangle { Layout.fillWidth: true; height: 1; color: theme.border }
-
-            // ── pagine ──────────────────────────────────────────────
-            StackLayout {
+            // ── isola contenuto ─────────────────────────────────────
+            Glass {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                currentIndex: appState.mode === "terminal" ? 1 : 0
+                glassRadius: theme.radius
+                fillOpacity: 0.26
+                clip: true
 
-                // ── pagina chat ─────────────────────────────────────
-                ColumnLayout {
-                    spacing: 0
+                StackLayout {
+                    anchors.fill: parent
+                    currentIndex: appState.mode === "terminal" ? 1 : 0
 
+                    // ── pagina chat ─────────────────────────────────
                     ListView {
                         id: chatList
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
                         model: chatModel
                         spacing: 14
                         clip: true
-                        topMargin: 18; bottomMargin: 18; leftMargin: 24; rightMargin: 24
+                        topMargin: 20; bottomMargin: 20; leftMargin: 22; rightMargin: 22
                         boundsBehavior: Flickable.StopAtBounds
 
                         add: Transition {
-                            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 220 }
-                            NumberAnimation { property: "scale"; from: 0.96; to: 1; duration: 220
-                                              easing.type: Easing.OutCubic }
+                            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 240 }
+                            NumberAnimation { property: "scale"; from: 0.92; to: 1; duration: 320
+                                              easing.type: Easing.OutBack; easing.overshoot: 1.2 }
                         }
 
                         ScrollBar.vertical: ScrollBar {
-                            contentItem: Rectangle { implicitWidth: 5; radius: 3; color: theme.border }
+                            contentItem: Rectangle { implicitWidth: 5; radius: 3
+                                                     color: Qt.rgba(1,1,1,0.15) }
                         }
 
                         delegate: Item {
@@ -499,15 +517,19 @@ ApplicationWindow {
                                 id: bubble
                                 anchors.right: role === "user" ? parent.right : undefined
                                 anchors.left:  role === "user" ? undefined : parent.left
-                                width: Math.min(msgText.implicitWidth + 30, parent.width * 0.78)
-                                height: msgText.implicitHeight + 22
-                                radius: theme.radius + 2
-                                color: role === "user" ? theme.userBubble : theme.surface
+                                width: Math.min(msgText.implicitWidth + 32, parent.width * 0.78)
+                                height: msgText.implicitHeight + 24
+                                radius: theme.radiusIn
+                                color: role === "user" ? Qt.rgba(0.35, 0.72, 1.0, 0.16)
+                                                       : Qt.rgba(1, 1, 1, 0.055)
+                                border.width: 1
+                                border.color: role === "user" ? Qt.rgba(0.35, 0.72, 1.0, 0.32)
+                                                              : Qt.rgba(1, 1, 1, 0.09)
 
                                 TextEdit {
                                     id: msgText
                                     anchors.fill: parent
-                                    anchors.margins: 11
+                                    anchors.margins: 12
                                     text: model.text
                                     textFormat: TextEdit.MarkdownText
                                     color: theme.text
@@ -522,7 +544,7 @@ ApplicationWindow {
 
                         footer: Item {
                             width: 1
-                            height: typing.visible ? 34 : 0
+                            height: typing.visible ? 36 : 0
                             TypingDots {
                                 id: typing
                                 visible: appState.voiceState === "thinking" && !appState.streaming
@@ -533,138 +555,140 @@ ApplicationWindow {
                         }
                     }
 
-                    Rectangle { Layout.fillWidth: true; height: 1; color: theme.border }
+                    // ── pagina terminale ────────────────────────────
+                    TerminalPage {
+                        id: terminalPage
+                        feed: terminalFeed
+                    }
+                }
+            }
 
-                    // Chip allegati in attesa di invio
-                    Flow {
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 16
-                        Layout.rightMargin: 16
-                        Layout.topMargin: appState.attachments.length > 0 ? 8 : 0
-                        spacing: 6
-                        visible: appState.attachments.length > 0
+            // Chip allegati (flottanti tra pannello e dock)
+            Flow {
+                Layout.fillWidth: true
+                Layout.leftMargin: 6
+                spacing: 6
+                visible: appState.mode === "chat" && appState.attachments.length > 0
 
-                        Repeater {
-                            model: appState.attachments
-                            delegate: Rectangle {
-                                width: attRow.width + 18; height: 26; radius: 13
-                                color: theme.surface2
-                                border.color: theme.accent
-                                Row {
-                                    id: attRow
-                                    anchors.centerIn: parent
-                                    spacing: 6
-                                    Text { text: "📄"; font.pixelSize: 11
-                                           anchors.verticalCenter: parent.verticalCenter }
-                                    Text { text: modelData.name; color: theme.text; font.pixelSize: 11
-                                           anchors.verticalCenter: parent.verticalCenter }
-                                    Text {
-                                        text: "✕"; color: theme.textDim; font.pixelSize: 11
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        MouseArea {
-                                            anchors.fill: parent; anchors.margins: -5
-                                            onClicked: {
-                                                var atts = appState.attachments.slice()
-                                                atts.splice(index, 1)
-                                                appState.attachments = atts
-                                            }
-                                        }
+                Repeater {
+                    model: appState.attachments
+                    delegate: Rectangle {
+                        width: attRow.width + 20; height: 28; radius: 14
+                        color: Qt.rgba(0.35, 0.72, 1.0, 0.12)
+                        border.color: Qt.rgba(0.35, 0.72, 1.0, 0.35)
+                        Row {
+                            id: attRow
+                            anchors.centerIn: parent
+                            spacing: 6
+                            Text { text: "📄"; font.pixelSize: 11
+                                   anchors.verticalCenter: parent.verticalCenter }
+                            Text { text: modelData.name; color: theme.text; font.pixelSize: 11
+                                   anchors.verticalCenter: parent.verticalCenter }
+                            Text {
+                                text: "✕"; color: theme.textDim; font.pixelSize: 11
+                                anchors.verticalCenter: parent.verticalCenter
+                                MouseArea {
+                                    anchors.fill: parent; anchors.margins: -5
+                                    onClicked: {
+                                        var atts = appState.attachments.slice()
+                                        atts.splice(index, 1)
+                                        appState.attachments = atts
                                     }
                                 }
                             }
                         }
                     }
-
-                    // ── input chat ──────────────────────────────────
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 76
-                        color: theme.surface
-
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.margins: 14
-                            spacing: 12
-
-                            StateOrb {
-                                voiceState: appState.voiceState
-                                onPressedChanged: pressed ? backend.pttDown() : backend.pttUp()
-                            }
-
-                            ToolButton {
-                                text: "📎"
-                                font.pixelSize: 15
-                                contentItem: Text { text: parent.text; font: parent.font
-                                                    color: theme.textDim
-                                                    horizontalAlignment: Text.AlignHCenter
-                                                    verticalAlignment: Text.AlignVCenter }
-                                background: Rectangle {
-                                    color: parent.hovered ? theme.surface2 : "transparent"; radius: 8
-                                }
-                                onClicked: fileDialog.open()
-                            }
-
-                            TextField {
-                                id: input
-                                Layout.fillWidth: true
-                                placeholderText: appState.voiceState === "loading"
-                                                 ? "Caricamento assistente…"
-                                                 : "Scrivi, trascina un file, tieni premuto l'orb o di' la wake word…"
-                                placeholderTextColor: theme.textDim
-                                enabled: appState.voiceState !== "loading"
-                                color: theme.text
-                                font.pixelSize: 14
-                                background: Rectangle {
-                                    color: theme.bg
-                                    radius: theme.radius
-                                    border.color: input.activeFocus ? theme.accent : theme.border
-                                    Behavior on border.color { ColorAnimation { duration: 120 } }
-                                }
-                                onAccepted: sendCurrentInput()
-                            }
-
-                            RoundButton {
-                                visible: appState.voiceState === "thinking" || appState.voiceState === "speaking"
-                                text: "◼"
-                                font.pixelSize: 12
-                                implicitWidth: 42; implicitHeight: 42
-                                background: Rectangle {
-                                    color: theme.danger; radius: 21
-                                    opacity: parent.hovered ? 1.0 : 0.85
-                                }
-                                contentItem: Text { text: parent.text; color: "white"; font: parent.font
-                                                    horizontalAlignment: Text.AlignHCenter
-                                                    verticalAlignment: Text.AlignVCenter }
-                                onClicked: backend.cancelTurn()
-                            }
-
-                            RoundButton {
-                                text: "➤"
-                                font.pixelSize: 15
-                                implicitWidth: 42; implicitHeight: 42
-                                enabled: input.text.trim().length > 0 || appState.attachments.length > 0
-                                scale: enabled ? 1.0 : 0.92
-                                Behavior on scale { NumberAnimation { duration: 120 } }
-                                background: Rectangle {
-                                    color: parent.enabled ? theme.accent : theme.surface2
-                                    radius: 21
-                                    Behavior on color { ColorAnimation { duration: 120 } }
-                                }
-                                contentItem: Text { text: parent.text
-                                                    color: parent.enabled ? "#0d1117" : theme.textDim
-                                                    font: parent.font
-                                                    horizontalAlignment: Text.AlignHCenter
-                                                    verticalAlignment: Text.AlignVCenter }
-                                onClicked: sendCurrentInput()
-                            }
-                        }
-                    }
                 }
+            }
 
-                // ── pagina terminale ────────────────────────────────
-                TerminalPage {
-                    id: terminalPage
-                    feed: terminalFeed
+            // ── dock input (capsula flottante, solo chat) ───────────
+            Glass {
+                visible: appState.mode === "chat"
+                Layout.fillWidth: true
+                Layout.preferredHeight: 66
+                glassRadius: 33
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 12
+                    anchors.rightMargin: 12
+                    spacing: 10
+
+                    StateOrb {
+                        voiceState: appState.voiceState
+                        onPressedChanged: pressed ? backend.pttDown() : backend.pttUp()
+                    }
+
+                    ToolButton {
+                        text: "📎"
+                        font.pixelSize: 15
+                        font.family: "Noto Color Emoji"
+                        contentItem: Text { text: parent.text; font: parent.font
+                                            color: theme.textDim
+                                            horizontalAlignment: Text.AlignHCenter
+                                            verticalAlignment: Text.AlignVCenter }
+                        background: Rectangle {
+                            color: parent.hovered ? Qt.rgba(1,1,1,0.08) : "transparent"; radius: 10
+                        }
+                        onClicked: fileDialog.open()
+                    }
+
+                    TextField {
+                        id: input
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 42
+                        placeholderText: appState.voiceState === "loading"
+                                         ? "Caricamento assistente…"
+                                         : "Scrivi, trascina un file, tieni premuto l'orb o di' la wake word…"
+                        placeholderTextColor: theme.textDim
+                        enabled: appState.voiceState !== "loading"
+                        color: theme.text
+                        font.pixelSize: 14
+                        leftPadding: 16
+                        background: Rectangle {
+                            color: Qt.rgba(0, 0, 0, 0.28)
+                            radius: 21
+                            border.color: input.activeFocus ? Qt.rgba(0.35, 0.72, 1.0, 0.55)
+                                                            : theme.glassLine
+                            Behavior on border.color { ColorAnimation { duration: 140 } }
+                        }
+                        onAccepted: sendCurrentInput()
+                    }
+
+                    RoundButton {
+                        visible: appState.voiceState === "thinking" || appState.voiceState === "speaking"
+                        text: "◼"
+                        font.pixelSize: 12
+                        implicitWidth: 42; implicitHeight: 42
+                        background: Rectangle {
+                            color: theme.danger; radius: 21
+                            opacity: parent.hovered ? 1.0 : 0.85
+                        }
+                        contentItem: Text { text: parent.text; color: "white"; font: parent.font
+                                            horizontalAlignment: Text.AlignHCenter
+                                            verticalAlignment: Text.AlignVCenter }
+                        onClicked: backend.cancelTurn()
+                    }
+
+                    RoundButton {
+                        text: "➤"
+                        font.pixelSize: 15
+                        implicitWidth: 42; implicitHeight: 42
+                        enabled: input.text.trim().length > 0 || appState.attachments.length > 0
+                        scale: enabled ? 1.0 : 0.9
+                        Behavior on scale { SpringAnimation { spring: 3.5; damping: 0.3 } }
+                        background: Rectangle {
+                            color: parent.enabled ? theme.accent : Qt.rgba(1,1,1,0.07)
+                            radius: 21
+                            Behavior on color { ColorAnimation { duration: 140 } }
+                        }
+                        contentItem: Text { text: parent.text
+                                            color: parent.enabled ? "#0a0d12" : theme.textDim
+                                            font: parent.font
+                                            horizontalAlignment: Text.AlignHCenter
+                                            verticalAlignment: Text.AlignVCenter }
+                        onClicked: sendCurrentInput()
+                    }
                 }
             }
         }
@@ -676,8 +700,8 @@ ApplicationWindow {
         errors: errorModel
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        anchors.margins: 16
-        width: Math.min(460, parent.width - 32)
+        anchors.margins: 20
+        width: Math.min(460, parent.width - 40)
         z: 50
     }
 }

@@ -55,9 +55,10 @@ Item {
             }
 
             background: Rectangle {
-                color: combo.hovered ? "#1f2630" : "transparent"
-                border.color: "#2d333b"
-                radius: 8
+                color: combo.hovered ? Qt.rgba(1,1,1,0.08) : Qt.rgba(0,0,0,0.22)
+                border.color: Qt.rgba(1,1,1,0.10)
+                radius: 12
+                Behavior on color { ColorAnimation { duration: 120 } }
             }
             contentItem: Text {
                 text: combo.currentIndex >= 0 ? combo.displayText : wrap.current
@@ -80,9 +81,9 @@ Item {
                 width: Math.max(combo.width, 260)
                 padding: 4
                 background: Rectangle {
-                    color: "#1f2630"
-                    border.color: "#2d333b"
-                    radius: 10
+                    color: Qt.rgba(0.055, 0.07, 0.10, 0.96)
+                    border.color: Qt.rgba(1,1,1,0.12)
+                    radius: 14
                 }
                 contentItem: ListView {
                     implicitHeight: Math.min(contentHeight, 320)
@@ -98,7 +99,7 @@ Item {
                 height: 30
                 highlighted: combo.highlightedIndex === index
                 background: Rectangle {
-                    color: highlighted ? "#2d333b" : "transparent"
+                    color: highlighted ? Qt.rgba(0.35, 0.72, 1.0, 0.16) : "transparent"
                     radius: 6
                 }
                 contentItem: Text {

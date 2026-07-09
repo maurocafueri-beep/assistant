@@ -63,8 +63,8 @@ Item {
         // ── barra cwd ───────────────────────────────────────────────
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 34
-            color: "#0d1117"
+            Layout.preferredHeight: 36
+            color: "transparent"
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 24
@@ -126,8 +126,10 @@ Item {
                     Rectangle {
                         width: parent ? parent.width : 0
                         height: reqText.implicitHeight + 20
-                        radius: 12
-                        color: "#1c3a5e"
+                        radius: 16
+                        color: Qt.rgba(0.35, 0.72, 1.0, 0.16)
+                        border.width: 1
+                        border.color: Qt.rgba(0.35, 0.72, 1.0, 0.32)
                         Text {
                             id: reqText
                             anchors.fill: parent; anchors.margins: 10
@@ -143,9 +145,11 @@ Item {
                     Rectangle {
                         width: parent ? parent.width : 0
                         height: propCol.height + 24
-                        radius: 12
-                        color: "#161b22"
-                        border.color: page.riskColor(d.risk_level)
+                        radius: 16
+                        color: Qt.rgba(1, 1, 1, 0.055)
+                        border.color: Qt.rgba(page.riskColor(d.risk_level).r,
+                                              page.riskColor(d.risk_level).g,
+                                              page.riskColor(d.risk_level).b, 0.45)
                         border.width: 1
 
                         Column {
@@ -181,8 +185,8 @@ Item {
                             Rectangle {
                                 width: propCol.width
                                 height: cmdText.implicitHeight + 16
-                                radius: 8
-                                color: "#0d1117"
+                                radius: 10
+                                color: Qt.rgba(0, 0, 0, 0.35)
                                 TextEdit {
                                     id: cmdText
                                     anchors.fill: parent; anchors.margins: 8
@@ -235,9 +239,9 @@ Item {
                     Rectangle {
                         width: parent ? parent.width : 0
                         height: resCol.height + 24
-                        radius: 12
-                        color: "#0d1117"
-                        border.color: d.success ? "#2d333b" : Qt.rgba(0.94, 0.24, 0.24, 0.5)
+                        radius: 16
+                        color: Qt.rgba(0, 0, 0, 0.30)
+                        border.color: d.success ? Qt.rgba(1, 1, 1, 0.10) : Qt.rgba(1, 0.42, 0.42, 0.5)
 
                         Column {
                             id: resCol
@@ -291,8 +295,10 @@ Item {
                     Rectangle {
                         width: parent ? parent.width : 0
                         height: anaText.implicitHeight + 20
-                        radius: 12
-                        color: "#161b22"
+                        radius: 16
+                        color: Qt.rgba(1, 1, 1, 0.055)
+                        border.width: 1
+                        border.color: Qt.rgba(1, 1, 1, 0.09)
                         TextEdit {
                             id: anaText
                             anchors.fill: parent; anchors.margins: 10
@@ -307,13 +313,13 @@ Item {
             }
         }
 
-        Rectangle { Layout.fillWidth: true; height: 1; color: "#2d333b" }
+        Rectangle { Layout.fillWidth: true; height: 1; color: Qt.rgba(1, 1, 1, 0.08) }
 
         // ── input ───────────────────────────────────────────────────
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 68
-            color: "#161b22"
+            color: "transparent"
 
             RowLayout {
                 anchors.fill: parent
@@ -328,8 +334,10 @@ Item {
                     color: "#e6edf3"
                     font.pixelSize: 13
                     background: Rectangle {
-                        color: "#0d1117"; radius: 12
-                        border.color: termInput.activeFocus ? "#4dabf7" : "#2d333b"
+                        color: Qt.rgba(0, 0, 0, 0.28); radius: 20
+                        border.color: termInput.activeFocus ? Qt.rgba(0.35, 0.72, 1.0, 0.55)
+                                                            : Qt.rgba(1, 1, 1, 0.10)
+                        Behavior on border.color { ColorAnimation { duration: 140 } }
                     }
                     onAccepted: page.submit()
                 }
@@ -340,7 +348,7 @@ Item {
                     implicitWidth: 40; implicitHeight: 40
                     enabled: termInput.text.trim().length > 0
                     background: Rectangle {
-                        color: parent.enabled ? "#4dabf7" : "#1f2630"; radius: 20
+                        color: parent.enabled ? "#5ab7ff" : Qt.rgba(1,1,1,0.07); radius: 20
                     }
                     contentItem: Text { text: parent.text
                                         color: parent.enabled ? "#0d1117" : "#8b949e"

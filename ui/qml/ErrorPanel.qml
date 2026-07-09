@@ -11,9 +11,9 @@ Rectangle {
     property ListModel errors
     property bool open: false
 
-    color: "#161b22"
-    border.color: "#2d333b"
-    radius: 14
+    color: Qt.rgba(0.055, 0.07, 0.10, 0.92)
+    border.color: Qt.rgba(1, 1, 1, 0.12)
+    radius: 18
     height: open ? Math.min(280, 64 + errors.count * 58) : 0
     opacity: open ? 1.0 : 0.0
     visible: height > 2
@@ -80,8 +80,8 @@ Rectangle {
                 width: ListView.view.width
                 height: errCol.height + 16
                 radius: 10
-                color: "#1f2630"
-                border.color: Qt.rgba(0.94, 0.24, 0.24, 0.35)
+                color: Qt.rgba(1, 1, 1, 0.05)
+                border.color: Qt.rgba(1, 0.42, 0.42, 0.35)
 
                 Column {
                     id: errCol
