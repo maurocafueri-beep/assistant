@@ -4,6 +4,7 @@
 
 import QtQuick
 import QtQuick.Controls.Basic
+import "."
 import QtQuick.Layouts
 
 Rectangle {
@@ -11,8 +12,8 @@ Rectangle {
     property ListModel errors
     property bool open: false
 
-    color: Qt.rgba(0.055, 0.07, 0.10, 0.92)
-    border.color: Qt.rgba(1, 1, 1, 0.12)
+    color: Theme.cardStrong
+    border.color: Theme.cardLine
     radius: 18
     height: open ? Math.min(280, 64 + errors.count * 58) : 0
     opacity: open ? 1.0 : 0.0
@@ -31,7 +32,7 @@ Rectangle {
             Layout.fillWidth: true
             Text {
                 text: "Errori di esecuzione"
-                color: "#e6edf3"
+                color: Theme.text
                 font.pixelSize: 13
                 font.bold: true
             }
@@ -41,18 +42,18 @@ Rectangle {
                 visible: panel.errors.count > 0
                 font.pixelSize: 11
                 background: Rectangle {
-                    color: parent.hovered ? "#2d333b" : "transparent"
-                    border.color: "#2d333b"; radius: 8
+                    color: parent.hovered ? Theme.cardHover : "transparent"
+                    border.color: Theme.cardLine; radius: 8
                 }
-                contentItem: Text { text: parent.text; color: "#8b949e"; font: parent.font
+                contentItem: Text { text: parent.text; color: Theme.textDim; font: parent.font
                                     horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                 onClicked: panel.errors.clear()
             }
             Button {
                 text: "✕"
                 font.pixelSize: 12
-                background: Rectangle { color: parent.hovered ? "#2d333b" : "transparent"; radius: 8 }
-                contentItem: Text { text: parent.text; color: "#8b949e"; font: parent.font
+                background: Rectangle { color: parent.hovered ? Theme.cardHover : "transparent"; radius: 8 }
+                contentItem: Text { text: parent.text; color: Theme.textDim; font: parent.font
                                     horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                 onClicked: panel.open = false
             }
@@ -65,14 +66,14 @@ Rectangle {
             spacing: 6
             clip: true
             ScrollBar.vertical: ScrollBar {
-                contentItem: Rectangle { implicitWidth: 4; radius: 2; color: "#2d333b" }
+                contentItem: Rectangle { implicitWidth: 4; radius: 2; color: Theme.scrollBar }
             }
 
             Text {
                 anchors.centerIn: parent
                 visible: panel.errors.count === 0
                 text: "Nessun errore — tutto liscio ✓"
-                color: "#8b949e"
+                color: Theme.textDim
                 font.pixelSize: 12
             }
 
@@ -80,8 +81,8 @@ Rectangle {
                 width: ListView.view.width
                 height: errCol.height + 16
                 radius: 10
-                color: Qt.rgba(1, 1, 1, 0.05)
-                border.color: Qt.rgba(1, 0.42, 0.42, 0.35)
+                color: Theme.dark ? Qt.rgba(0.30, 0.16, 0.17, 0.6) : Qt.rgba(0.98, 0.94, 0.94, 0.9)
+                border.color: Qt.rgba(0.90, 0.28, 0.30, 0.30)
 
                 Column {
                     id: errCol
@@ -92,14 +93,14 @@ Rectangle {
                     spacing: 2
                     Row {
                         spacing: 8
-                        Text { text: model.time;   color: "#8b949e"; font.pixelSize: 10 }
-                        Text { text: model.source; color: "#f03e3e"; font.pixelSize: 10
+                        Text { text: model.time;   color: Theme.textDim; font.pixelSize: 10 }
+                        Text { text: model.source; color: Theme.danger; font.pixelSize: 10
                                font.capitalization: Font.AllUppercase; font.bold: true }
                     }
                     Text {
                         width: errCol.width
                         text: model.message
-                        color: "#e6edf3"
+                        color: Theme.text
                         font.pixelSize: 12
                         wrapMode: Text.Wrap
                         maximumLineCount: 3

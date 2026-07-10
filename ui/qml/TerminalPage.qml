@@ -7,6 +7,7 @@
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
+import "."
 
 Item {
     id: page
@@ -69,11 +70,11 @@ Item {
                 anchors.fill: parent
                 anchors.leftMargin: 24
                 anchors.rightMargin: 24
-                Text { text: "📁"; font.pixelSize: 12 }
+                Text { text: "📁"; font.pixelSize: 12; font.family: "Noto Color Emoji" }
                 Text {
                     Layout.fillWidth: true
                     text: page.cwd
-                    color: "#8b949e"
+                    color: Theme.textDim
                     font.family: "monospace"
                     font.pixelSize: 11
                     elide: Text.ElideMiddle
@@ -81,9 +82,9 @@ Item {
                 Button {
                     text: "Reset"
                     font.pixelSize: 10
-                    background: Rectangle { color: parent.hovered ? "#1f2630" : "transparent"
-                                            border.color: "#2d333b"; radius: 6 }
-                    contentItem: Text { text: parent.text; color: "#8b949e"; font: parent.font
+                    background: Rectangle { color: parent.hovered ? Theme.cardHover : Theme.card
+                                            border.color: Theme.cardLine; radius: 10 }
+                    contentItem: Text { text: parent.text; color: Theme.textDim; font: parent.font
                                         horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     onClicked: backend.terminalReset()
                 }
@@ -101,7 +102,7 @@ Item {
             topMargin: 16; bottomMargin: 16; leftMargin: 24; rightMargin: 24
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar {
-                contentItem: Rectangle { implicitWidth: 5; radius: 3; color: "#2d333b" }
+                contentItem: Rectangle { implicitWidth: 5; radius: 3; color: Theme.scrollBar }
             }
 
             add: Transition {
@@ -127,14 +128,14 @@ Item {
                         width: parent ? parent.width : 0
                         height: reqText.implicitHeight + 20
                         radius: 16
-                        color: Qt.rgba(0.35, 0.72, 1.0, 0.16)
+                        color: Theme.accentSoft
                         border.width: 1
-                        border.color: Qt.rgba(0.35, 0.72, 1.0, 0.32)
+                        border.color: Theme.accentLine
                         Text {
                             id: reqText
                             anchors.fill: parent; anchors.margins: 10
                             text: d.text
-                            color: "#e6edf3"; font.pixelSize: 13; wrapMode: Text.Wrap
+                            color: Theme.text; font.pixelSize: 13; wrapMode: Text.Wrap
                         }
                     }
                 }
@@ -146,7 +147,7 @@ Item {
                         width: parent ? parent.width : 0
                         height: propCol.height + 24
                         radius: 16
-                        color: Qt.rgba(1, 1, 1, 0.055)
+                        color: Theme.cardStrong
                         border.color: Qt.rgba(page.riskColor(d.risk_level).r,
                                               page.riskColor(d.risk_level).g,
                                               page.riskColor(d.risk_level).b, 0.45)
@@ -186,12 +187,12 @@ Item {
                                 width: propCol.width
                                 height: cmdText.implicitHeight + 16
                                 radius: 10
-                                color: Qt.rgba(0, 0, 0, 0.35)
+                                color: Theme.codeBg
                                 TextEdit {
                                     id: cmdText
                                     anchors.fill: parent; anchors.margins: 8
                                     text: "$ " + d.command
-                                    color: "#3bc9db"
+                                    color: Theme.codeText
                                     font.family: "monospace"; font.pixelSize: 12
                                     wrapMode: Text.WrapAnywhere
                                     readOnly: true; selectByMouse: true
@@ -202,7 +203,7 @@ Item {
                                 width: propCol.width
                                 text: d.rationale || ""
                                 visible: text.length > 0
-                                color: "#8b949e"; font.pixelSize: 12; wrapMode: Text.Wrap
+                                color: Theme.textDim; font.pixelSize: 12; wrapMode: Text.Wrap
                             }
 
                             Row {
@@ -240,8 +241,8 @@ Item {
                         width: parent ? parent.width : 0
                         height: resCol.height + 24
                         radius: 16
-                        color: Qt.rgba(0, 0, 0, 0.30)
-                        border.color: d.success ? Qt.rgba(1, 1, 1, 0.10) : Qt.rgba(1, 0.42, 0.42, 0.5)
+                        color: Theme.cardStrong
+                        border.color: d.success ? Theme.cardLine : Qt.rgba(0.90, 0.28, 0.30, 0.45)
 
                         Column {
                             id: resCol
@@ -253,12 +254,12 @@ Item {
                                 spacing: 10
                                 Text {
                                     text: d.success ? "✓ exit " + d.exit_code : "✗ exit " + d.exit_code
-                                    color: d.success ? "#40c057" : "#f03e3e"
+                                    color: d.success ? Theme.okCol : Theme.danger
                                     font.pixelSize: 11; font.bold: true
                                 }
                                 Text {
                                     text: Math.round(d.duration_ms) + " ms"
-                                    color: "#8b949e"; font.pixelSize: 11
+                                    color: Theme.textDim; font.pixelSize: 11
                                 }
                                 Text {
                                     visible: d.truncated === true
@@ -271,7 +272,7 @@ Item {
                                 width: resCol.width
                                 visible: (d.stdout || "").length > 0
                                 text: d.stdout
-                                color: "#e6edf3"
+                                color: Theme.text
                                 font.family: "monospace"; font.pixelSize: 11
                                 wrapMode: Text.WrapAnywhere
                                 readOnly: true; selectByMouse: true
@@ -280,7 +281,7 @@ Item {
                                 width: resCol.width
                                 visible: (d.stderr || "").length > 0
                                 text: d.stderr
-                                color: "#ff8787"
+                                color: "#c92a2a"
                                 font.family: "monospace"; font.pixelSize: 11
                                 wrapMode: Text.WrapAnywhere
                                 readOnly: true; selectByMouse: true
@@ -296,15 +297,15 @@ Item {
                         width: parent ? parent.width : 0
                         height: anaText.implicitHeight + 20
                         radius: 16
-                        color: Qt.rgba(1, 1, 1, 0.055)
+                        color: Theme.mintFill
                         border.width: 1
-                        border.color: Qt.rgba(1, 1, 1, 0.09)
+                        border.color: Theme.mintLine
                         TextEdit {
                             id: anaText
                             anchors.fill: parent; anchors.margins: 10
                             text: d.text
                             textFormat: TextEdit.MarkdownText
-                            color: "#e6edf3"; font.pixelSize: 13
+                            color: Theme.text; font.pixelSize: 13
                             wrapMode: Text.Wrap
                             readOnly: true; selectByMouse: true
                         }
@@ -313,7 +314,7 @@ Item {
             }
         }
 
-        Rectangle { Layout.fillWidth: true; height: 1; color: Qt.rgba(1, 1, 1, 0.08) }
+        Rectangle { Layout.fillWidth: true; height: 1; color: Theme.scrollBar }
 
         // ── input ───────────────────────────────────────────────────
         Rectangle {
@@ -330,13 +331,12 @@ Item {
                     id: termInput
                     Layout.fillWidth: true
                     placeholderText: "Cosa devo fare? (es. \"mostra i processi che usano più RAM\")"
-                    placeholderTextColor: "#8b949e"
-                    color: "#e6edf3"
+                    placeholderTextColor: Theme.textDim
+                    color: Theme.text
                     font.pixelSize: 13
                     background: Rectangle {
-                        color: Qt.rgba(0, 0, 0, 0.28); radius: 20
-                        border.color: termInput.activeFocus ? Qt.rgba(0.35, 0.72, 1.0, 0.55)
-                                                            : Qt.rgba(1, 1, 1, 0.10)
+                        color: Theme.inputFill; radius: 20
+                        border.color: termInput.activeFocus ? Theme.accentLine : Theme.cardLine
                         Behavior on border.color { ColorAnimation { duration: 140 } }
                     }
                     onAccepted: page.submit()
@@ -348,10 +348,10 @@ Item {
                     implicitWidth: 40; implicitHeight: 40
                     enabled: termInput.text.trim().length > 0
                     background: Rectangle {
-                        color: parent.enabled ? "#5ab7ff" : Qt.rgba(1,1,1,0.07); radius: 20
+                        color: parent.enabled ? Theme.accent : Theme.card; radius: 20
                     }
                     contentItem: Text { text: parent.text
-                                        color: parent.enabled ? "#0d1117" : "#8b949e"
+                                        color: parent.enabled ? "white" : Theme.textDim
                                         font: parent.font
                                         horizontalAlignment: Text.AlignHCenter
                                         verticalAlignment: Text.AlignVCenter }

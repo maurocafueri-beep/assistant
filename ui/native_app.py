@@ -15,8 +15,11 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import QUrl
-from PyQt6.QtGui import QGuiApplication, QIcon
+from PyQt6.QtGui import QIcon
 from PyQt6.QtQml import QQmlApplicationEngine
+# QApplication (widgets) e non QGuiApplication: serve al QFileDialog di
+# fallback del backend (pickFiles), che evita i portal inaffidabili.
+from PyQt6.QtWidgets import QApplication
 
 from core.logger import logger
 from ui.native_backend import Backend
@@ -26,7 +29,7 @@ _ASSETS  = Path(__file__).parent / "assets"
 
 
 def run(personality: Optional[str] = None, ptt_key: str = "space") -> int:
-    app = QGuiApplication(sys.argv)
+    app = QApplication(sys.argv)
     app.setApplicationName("Local Assistant")
     app.setDesktopFileName("local-assistant")
     icon = _ASSETS / "icon.png"

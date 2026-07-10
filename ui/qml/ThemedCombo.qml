@@ -4,6 +4,7 @@
 
 import QtQuick
 import QtQuick.Controls.Basic
+import "."
 
 Item {
     id: wrap
@@ -20,7 +21,7 @@ Item {
 
         Text {
             text: wrap.label
-            color: "#8b949e"
+            color: Theme.textDim
             font.pixelSize: 9
             font.capitalization: Font.AllUppercase
             leftPadding: 8
@@ -55,14 +56,14 @@ Item {
             }
 
             background: Rectangle {
-                color: combo.hovered ? Qt.rgba(1,1,1,0.08) : Qt.rgba(0,0,0,0.22)
-                border.color: Qt.rgba(1,1,1,0.10)
+                color: combo.hovered ? Theme.cardHover : Theme.card
+                border.color: Theme.cardLine
                 radius: 12
                 Behavior on color { ColorAnimation { duration: 120 } }
             }
             contentItem: Text {
                 text: combo.currentIndex >= 0 ? combo.displayText : wrap.current
-                color: "#e6edf3"
+                color: Theme.text
                 font: combo.font
                 leftPadding: 8
                 rightPadding: 22
@@ -73,7 +74,7 @@ Item {
                 x: combo.width - width - 8
                 anchors.verticalCenter: parent.verticalCenter
                 text: "▾"
-                color: "#8b949e"
+                color: Theme.textDim
                 font.pixelSize: 10
             }
             popup: Popup {
@@ -81,8 +82,8 @@ Item {
                 width: Math.max(combo.width, 260)
                 padding: 4
                 background: Rectangle {
-                    color: Qt.rgba(0.055, 0.07, 0.10, 0.96)
-                    border.color: Qt.rgba(1,1,1,0.12)
+                    color: Theme.cardStrong
+                    border.color: Theme.cardLine
                     radius: 14
                 }
                 contentItem: ListView {
@@ -90,7 +91,7 @@ Item {
                     clip: true
                     model: combo.popup.visible ? combo.delegateModel : null
                     ScrollBar.vertical: ScrollBar {
-                        contentItem: Rectangle { implicitWidth: 4; radius: 2; color: "#2d333b" }
+                        contentItem: Rectangle { implicitWidth: 4; radius: 2; color: Theme.scrollBar }
                     }
                 }
             }
@@ -99,12 +100,12 @@ Item {
                 height: 30
                 highlighted: combo.highlightedIndex === index
                 background: Rectangle {
-                    color: highlighted ? Qt.rgba(0.35, 0.72, 1.0, 0.16) : "transparent"
+                    color: highlighted ? Theme.accentSoft : "transparent"
                     radius: 6
                 }
                 contentItem: Text {
                     text: modelData
-                    color: "#e6edf3"
+                    color: Theme.text
                     font.pixelSize: 12
                     leftPadding: 6
                     verticalAlignment: Text.AlignVCenter

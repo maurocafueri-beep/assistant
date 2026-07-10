@@ -385,6 +385,22 @@ class Backend(QObject):
         if self._ui_loop is not None:
             self._call_async(self._ui_loop.broadcast_init())
 
+    # impostazioni UI (tema, preferenze del solo frontend) -----------------
+
+    @pyqtSlot(str, result=str)
+    def uiSetting(self, key: str) -> str:
+        """Legge una preferenza da ui-settings.json (stringa, '' se assente).
+        Lettura sincrona di un piccolo JSON locale: costo trascurabile."""
+        from ui.server import _load_ui_settings
+        try:
+            return str(_load_ui_settings().get(key, "") or "")
+        except Exception:
+            return ""
+
+    @pyqtSlot(str, str)
+    def saveUiSetting(self, key: str, value: str) -> None:
+        self._save_setting(key, value)
+
     # sessioni ---------------------------------------------------------
 
     @pyqtSlot()
@@ -414,6 +430,31 @@ class Backend(QObject):
         self._call_on_loop(lambda: self._ui_loop.ptt_up())
 
     # upload -------------------------------------------------------------
+
+    @pyqtSlot()
+    def pickFiles(self) -> None:
+        """
+        Apre il selettore file con il dialog Qt NON nativo. Su Hyprland il
+        FileDialog QML passa dal portal FileChooser di xdg-desktop-portal,
+        che a seconda del backend attivo può non rispondere (dialog che non
+        appare mai): il widget Qt invece funziona sempre. Richiede che
+        l'app sia una QApplication (vedi ui/native_app.py). Gira nel thread
+        GUI (slot QML), quindi il dialog modale è legittimo qui.
+        """
+        try:
+            from pathlib import Path
+
+            from PyQt6.QtWidgets import QFileDialog
+            files, _ = QFileDialog.getOpenFileNames(
+                None, "Allega file", str(Path.home()),
+                options=QFileDialog.Option.DontUseNativeDialog,
+            )
+        except Exception as exc:
+            logger.warning("ui.native | pickFiles: {}", exc)
+            self._emitter.event.emit({"type": "_upload", "ok": False, "error": str(exc)})
+            return
+        for f in files:
+            self.uploadFile(f)
 
     @pyqtSlot(str)
     def uploadFile(self, file_url: str) -> None:

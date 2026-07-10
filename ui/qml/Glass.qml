@@ -1,69 +1,46 @@
-// ui/qml/Glass.qml — pannello "Liquid Glass" in stile macOS Tahoe.
-// Vetro traslucido: riempimento scuro semi-trasparente, bordo speculare
-// (più luminoso in alto, come luce radente), sheen verticale tenue e
-// ombra morbida. I contenuti vanno nel default property (children).
+// ui/qml/Glass.qml — card "frosted glass" su tema CHIARO (stile reference:
+// pastelli soffici, card bianche traslucide, ombre leggere e diffuse).
+// I contenuti vanno nel default property (children).
 
 import QtQuick
 import QtQuick.Effects
+import "."
 
 Item {
     id: glass
     default property alias content: inner.data
-    property real  glassRadius: 22
-    property color tint: "transparent"        // velatura opzionale (es. accent)
-    property real  fillOpacity: 0.45
+    property real  glassRadius: Theme.radius
+    property color fill: Theme.card
+    property color line: Theme.cardLine
     property bool  shadow: true
+    property real  shadowStrength: 0.10
 
-    // ombra morbida sotto il pannello
     MultiEffect {
         visible: glass.shadow
         source: panel
         anchors.fill: panel
         shadowEnabled: true
-        shadowBlur: 0.9
-        shadowOpacity: 0.45
-        shadowVerticalOffset: 6
-        shadowColor: "#000000"
+        shadowBlur: 1.0
+        shadowOpacity: glass.shadowStrength
+        shadowVerticalOffset: 8
+        shadowColor: Theme.shadowCol
     }
 
     Rectangle {
         id: panel
         anchors.fill: parent
         radius: glass.glassRadius
-        color: Qt.rgba(0.086, 0.106, 0.133, glass.fillOpacity)   // #161b22 traslucido
+        color: glass.fill
         border.width: 1
-        border.color: Qt.rgba(1, 1, 1, 0.10)
+        border.color: glass.line
 
-        // velatura colorata opzionale
-        Rectangle {
-            anchors.fill: parent
-            radius: parent.radius
-            color: glass.tint
-            opacity: glass.tint.a > 0 ? 0.16 : 0
-        }
-
-        // sheen: luce radente dall'alto
+        // sheen delicato dall'alto (vetro satinato)
         Rectangle {
             anchors.fill: parent
             radius: parent.radius
             gradient: Gradient {
-                GradientStop { position: 0.0;  color: Qt.rgba(1, 1, 1, 0.065) }
-                GradientStop { position: 0.28; color: Qt.rgba(1, 1, 1, 0.015) }
-                GradientStop { position: 1.0;  color: "transparent" }
-            }
-        }
-
-        // bordo speculare superiore (highlight 1px che sfuma ai lati)
-        Rectangle {
-            anchors.top: parent.top
-            anchors.topMargin: 1
-            anchors.horizontalCenter: parent.horizontalCenter
-            width: parent.width - parent.radius * 1.6
-            height: 1
-            gradient: Gradient {
-                orientation: Gradient.Horizontal
-                GradientStop { position: 0.0; color: "transparent" }
-                GradientStop { position: 0.5; color: Qt.rgba(1, 1, 1, 0.22) }
+                GradientStop { position: 0.0; color: Theme.dark ? Qt.rgba(1,1,1,0.05) : Qt.rgba(1,1,1,0.35) }
+                GradientStop { position: 0.5; color: Theme.dark ? Qt.rgba(1,1,1,0.01) : Qt.rgba(1,1,1,0.05) }
                 GradientStop { position: 1.0; color: "transparent" }
             }
         }

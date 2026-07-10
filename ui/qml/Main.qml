@@ -1,42 +1,27 @@
-// ui/qml/Main.qml — finestra principale della UI nativa Qt Quick (v3).
-// Design "Liquid Glass" in stile macOS Tahoe: sfondo profondo con blob
-// colorati sfocati, pannelli di vetro flottanti (Glass.qml) con bordo
-// speculare e ombre morbide, raggi concentrici, animazioni elastiche.
-// Funzioni: chat vocale streaming, terminale agentico, upload, pannello
-// errori, sessioni, selettori, TTS, latenze. Parla solo con `backend`.
+// ui/qml/Main.qml — finestra principale della UI nativa Qt Quick (v5).
+// Design chiaro pastello sul reference con TEMA SCURO commutabile (singleton
+// Theme, cross-fade animato). Rail di icone, sessioni a card Oggi/Ieri con
+// anteprima, saluto grande, chips strumenti, input a pillola. Upload via
+// pulsante 📎, chip File e drag&drop sull'intera finestra. Parla solo con
+// `backend`.
 
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Effects
 import QtQuick.Layouts
-import QtQuick.Dialogs
+import "."
 
 ApplicationWindow {
     id: root
     visible: true
-    width: 1100
-    height: 740
-    minimumWidth: 780
-    minimumHeight: 520
+    width: 1180
+    height: 760
+    minimumWidth: 860
+    minimumHeight: 560
     title: "Local Assistant"
-    // Trasparenza reale: il desktop si vede attraverso (compositor Wayland).
     color: "transparent"
 
-    // ── tema ────────────────────────────────────────────────────────
-    QtObject {
-        id: theme
-        readonly property color text:      "#f2f5f8"
-        readonly property color textDim:   "#9aa4b2"
-        readonly property color accent:    "#5ab7ff"
-        readonly property color accent2:   "#a78bfa"
-        readonly property color danger:    "#ff6b6b"
-        readonly property color ok:        "#51cf66"
-        readonly property color warn:      "#ffd43b"
-        readonly property int   radius:    22     // raggio pannelli
-        readonly property int   radiusIn:  16     // raggio elementi interni (concentrico)
-        readonly property color glassLine: Qt.rgba(1, 1, 1, 0.10)
-        readonly property color glassFill: Qt.rgba(1, 1, 1, 0.055)
-    }
+    Component.onCompleted: Theme.dark = backend.uiSetting("ui_theme") === "dark"
 
     // ── stato applicativo ───────────────────────────────────────────
     QtObject {
@@ -68,6 +53,23 @@ ApplicationWindow {
     function pushError(source, message) {
         errorModel.insert(0, { time: nowTime(), source: source, message: message })
         if (errorModel.count > 50) errorModel.remove(50, errorModel.count - 50)
+    }
+
+    function sessionGroups() {
+        var groups = [{ label: "Oggi", items: [] },
+                      { label: "Ieri", items: [] },
+                      { label: "Precedenti", items: [] }]
+        var now = new Date()
+        var today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000
+        var yesterday = today - 86400
+        for (var i = 0; i < appState.sessions.length; i++) {
+            var s = appState.sessions[i]
+            var t = s.last_active || 0
+            if (t >= today)          groups[0].items.push(s)
+            else if (t >= yesterday) groups[1].items.push(s)
+            else                     groups[2].items.push(s)
+        }
+        return groups.filter(g => g.items.length > 0)
     }
 
     function scrollChatToEnd() { chatList.positionViewAtEnd() }
@@ -134,15 +136,17 @@ ApplicationWindow {
         }
         function onSessionsChanged(list)  { appState.sessions = list }
         function onSessionSwitched(p) {
-            appState.sessionId = p.session || ""
+            // il bridge emette "id" (protocollo storico della UI web)
+            appState.sessionId = p.id || p.session || ""
             appState.attachments = []
+            if (p.sessions) appState.sessions = p.sessions
             loadMessages(p.messages)
         }
         function onModelChanged(name)     { appState.model = name }
         function onPersonalityChanged(name, display) { appState.personality = name }
         function onVoiceChanged(name)     { appState.voice = name }
         function onTtsChanged(en)         { appState.ttsEnabled = en }
-        function onModeChanged(m)         { appState.mode = m }
+        function onModeChanged(m)         { appState.mode = m; pageFade.restart() }
         function onModelsListed(list)     { appState.models = list }
         function onErrorOccurred(p)       { pushError(p.source || "app", p.message || "") }
         function onBackendError(msg)      { pushError("backend", msg) }
@@ -167,346 +171,378 @@ ApplicationWindow {
         }
     }
 
-    // ── sfondo: velo neutro traslucido (60% opaco) ──────────────────
-    // Il desktop filtra attraverso; con una windowrule Hyprland di blur
-    // si ottiene il vero effetto "frosted" dietro la finestra.
+    // ── sfondo: gradiente pastello + aloni (tema-reattivo) ──────────
     Rectangle {
         anchors.fill: parent
-        color: Qt.rgba(0.075, 0.08, 0.09, 0.60)
+        opacity: 0.96
+        gradient: Gradient {
+            GradientStop { position: 0.0;  color: Theme.bg0 }
+            GradientStop { position: 0.45; color: Theme.bg1 }
+            GradientStop { position: 1.0;  color: Theme.bg2 }
+        }
     }
-
-    // ── drag & drop file (in chat) ──────────────────────────────────
-    DropArea {
+    Item {
         anchors.fill: parent
-        enabled: appState.mode === "chat"
-        onDropped: (drop) => {
-            if (drop.hasUrls)
-                for (var i = 0; i < drop.urls.length; i++)
-                    backend.uploadFile(drop.urls[i].toString())
-        }
-        Rectangle {
-            anchors.fill: parent
-            anchors.margins: 10
-            visible: parent.containsDrag
-            color: Qt.rgba(0.35, 0.72, 1.0, 0.07)
-            border.color: theme.accent
-            border.width: 2
-            radius: theme.radius
-            z: 100
-            Text {
-                anchors.centerIn: parent
-                text: "Rilascia per allegare"
-                color: theme.accent
-                font.pixelSize: 20
-                font.bold: true
-            }
-        }
+        layer.enabled: true
+        layer.effect: MultiEffect { blurEnabled: true; blur: 1.0; blurMax: 64 }
+        opacity: 0.5
+        Rectangle { x: -root.width*0.1; y: -root.height*0.2
+                    width: root.width*0.5; height: width; radius: width/2; color: Theme.blob1 }
+        Rectangle { x: root.width*0.65; y: root.height*0.55
+                    width: root.width*0.5; height: width; radius: width/2; color: Theme.blob2 }
     }
 
-    FileDialog {
-        id: fileDialog
-        title: "Allega file"
-        fileMode: FileDialog.OpenFiles
-        onAccepted: {
-            for (var i = 0; i < selectedFiles.length; i++)
-                backend.uploadFile(selectedFiles[i].toString())
-        }
-    }
-
-    // ── layout: isole di vetro flottanti ────────────────────────────
+    // ── layout ──────────────────────────────────────────────────────
     RowLayout {
         anchors.fill: parent
-        anchors.margins: 14
-        spacing: 12
+        anchors.margins: 18
+        spacing: 16
 
-        // ── isola sessioni ──────────────────────────────────────────
-        Glass {
-            id: sidebar
+        // ── rail icone ──────────────────────────────────────────────
+        ColumnLayout {
             Layout.fillHeight: true
-            Layout.preferredWidth: sidebarOpen && appState.mode === "chat" ? 230 : 0
-            property bool sidebarOpen: true
-            glassRadius: theme.radius
+            Layout.preferredWidth: 52
+            spacing: 12
+
+            component RailButton: AbstractButton {
+                id: rb
+                property string glyph: ""
+                property bool   active: false
+                property color  glyphColor: Theme.textDim
+                property bool   emoji: false
+                Layout.preferredWidth: 44
+                Layout.preferredHeight: 44
+                scale: pressed ? 0.90 : (hovered ? 1.08 : 1.0)
+                Behavior on scale { SpringAnimation { spring: 3.5; damping: 0.28 } }
+                background: Rectangle {
+                    radius: 22
+                    color: rb.active ? Theme.accent
+                                     : (rb.hovered ? Theme.cardHover : Theme.card)
+                    border.color: Theme.cardLine
+                    Behavior on color { ColorAnimation { duration: 140 } }
+                }
+                contentItem: Text {
+                    text: rb.glyph
+                    color: rb.active ? "white" : rb.glyphColor
+                    font.pixelSize: rb.emoji ? 15 : 17
+                    font.bold: !rb.emoji
+                    font.family: rb.emoji ? "Noto Color Emoji" : Qt.application.font.family
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+            }
+
+            Item { Layout.preferredHeight: 4 }
+
+            RailButton {
+                glyph: "＋"
+                onClicked: backend.newSession()
+                ToolTip.visible: hovered; ToolTip.text: "Nuova chat"
+            }
+            RailButton {
+                glyph: "💬"; emoji: true
+                active: appState.mode === "chat"
+                onClicked: backend.setMode("chat")
+                ToolTip.visible: hovered; ToolTip.text: "Chat"
+            }
+            RailButton {
+                glyph: ">_"
+                active: appState.mode === "terminal"
+                onClicked: backend.setMode("terminal")
+                ToolTip.visible: hovered; ToolTip.text: "Terminale"
+            }
+
+            Item { Layout.fillHeight: true }
+
+            RailButton {
+                glyph: Theme.dark ? "☀" : "☾"
+                onClicked: {
+                    Theme.dark = !Theme.dark
+                    backend.saveUiSetting("ui_theme", Theme.dark ? "dark" : "light")
+                }
+                ToolTip.visible: hovered
+                ToolTip.text: Theme.dark ? "Tema chiaro" : "Tema scuro"
+            }
+            RailButton {
+                glyph: errorModel.count > 0 ? String(errorModel.count) : "✓"
+                glyphColor: errorModel.count > 0 ? Theme.warn : Theme.textDim
+                onClicked: errorPanel.open = !errorPanel.open
+                ToolTip.visible: hovered
+                ToolTip.text: errorModel.count > 0
+                              ? errorModel.count + " errori — clic per aprire"
+                              : "Nessun errore"
+            }
+            RailButton {
+                glyph: "🔊"; emoji: true
+                active: appState.ttsEnabled
+                onClicked: backend.setTtsEnabled(!appState.ttsEnabled)
+                ToolTip.visible: hovered
+                ToolTip.text: appState.ttsEnabled ? "Voce attiva" : "Voce disattivata"
+            }
+
+            Rectangle {
+                Layout.preferredWidth: 44
+                Layout.preferredHeight: 44
+                radius: 22
+                gradient: Gradient {
+                    GradientStop { position: 0.0; color: "#8fb8fe" }
+                    GradientStop { position: 1.0; color: "#c39efb" }
+                }
+                border.color: Theme.cardLine
+                Text {
+                    anchors.centerIn: parent
+                    text: (appState.personality || "?").charAt(0).toUpperCase()
+                    color: "white"
+                    font.pixelSize: 17
+                    font.bold: true
+                }
+                MouseArea { id: avatarArea; anchors.fill: parent; hoverEnabled: true }
+                ToolTip.visible: avatarArea.containsMouse
+                ToolTip.text: "Profilo: " + appState.personality + " · Voce: " + appState.voice
+            }
+        }
+
+        // ── pannello sessioni ───────────────────────────────────────
+        Glass {
+            Layout.fillHeight: true
+            Layout.preferredWidth: appState.mode === "chat" ? 268 : 0
+            glassRadius: Theme.radius
+            fill: Theme.cardSoft
             clip: true
             visible: Layout.preferredWidth > 0
             Behavior on Layout.preferredWidth {
-                NumberAnimation { duration: 260; easing.type: Easing.OutCubic }
+                NumberAnimation { duration: 240; easing.type: Easing.OutCubic }
             }
 
-            ColumnLayout {
+            Flickable {
                 anchors.fill: parent
-                anchors.margins: 12
-                spacing: 10
+                anchors.margins: 16
+                contentHeight: sessCol.height
+                clip: true
 
-                Button {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 38
-                    text: "＋  Nuova chat"
-                    font.pixelSize: 13
-                    scale: pressed ? 0.97 : 1.0
-                    Behavior on scale { SpringAnimation { spring: 4; damping: 0.3 } }
-                    background: Rectangle {
-                        color: parent.hovered ? Qt.rgba(1,1,1,0.10) : theme.glassFill
-                        border.color: theme.glassLine
-                        radius: theme.radiusIn
-                        Behavior on color { ColorAnimation { duration: 140 } }
+                Column {
+                    id: sessCol
+                    width: parent.width
+                    spacing: 10
+
+                    Text {
+                        text: "Chat"
+                        color: Theme.text
+                        font.pixelSize: 21
+                        font.bold: true
+                        bottomPadding: 4
                     }
-                    contentItem: Text {
-                        text: parent.text; color: theme.text; font: parent.font
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                    }
-                    onClicked: backend.newSession()
-                }
 
-                ListView {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    model: appState.sessions
-                    spacing: 4
-                    clip: true
-
-                    delegate: Rectangle {
-                        width: ListView.view.width
-                        height: 40
-                        radius: theme.radiusIn - 4
-                        color: modelData.id === appState.sessionId
-                               ? Qt.rgba(0.35, 0.72, 1.0, 0.14)
-                               : (sessionArea.containsMouse ? Qt.rgba(1,1,1,0.06) : "transparent")
-                        border.color: modelData.id === appState.sessionId
-                                      ? Qt.rgba(0.35, 0.72, 1.0, 0.30) : "transparent"
-                        Behavior on color { ColorAnimation { duration: 120 } }
-
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 12
-                            anchors.rightMargin: 8
+                    Repeater {
+                        model: sessionGroups()
+                        delegate: Column {
+                            width: sessCol.width
+                            spacing: 8
                             Text {
-                                Layout.fillWidth: true
-                                text: modelData.name || modelData.id
-                                color: modelData.id === appState.sessionId ? theme.text : theme.textDim
-                                font.pixelSize: 13
-                                elide: Text.ElideRight
-                            }
-                            Text {
-                                visible: sessionArea.containsMouse && appState.sessions.length > 1
-                                text: "✕"
-                                color: theme.textDim
+                                text: modelData.label
+                                color: Theme.textDim
                                 font.pixelSize: 12
-                                MouseArea {
-                                    anchors.fill: parent
-                                    anchors.margins: -6
-                                    onClicked: backend.deleteSession(modelData.id)
+                                font.bold: true
+                                topPadding: 6
+                            }
+                            Repeater {
+                                model: modelData.items
+                                delegate: Rectangle {
+                                    width: sessCol.width
+                                    height: 62
+                                    radius: Theme.radiusIn
+                                    color: modelData.id === appState.sessionId
+                                           ? Theme.cardStrong
+                                           : (cardArea.containsMouse ? Theme.cardHover : Theme.card)
+                                    border.color: modelData.id === appState.sessionId
+                                                  ? Theme.accentLine : Theme.cardLine
+                                    Behavior on color { ColorAnimation { duration: 120 } }
+
+                                    Column {
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        anchors.leftMargin: 14
+                                        anchors.rightMargin: 26
+                                        spacing: 3
+                                        Text {
+                                            width: parent.width
+                                            text: modelData.name || modelData.id
+                                            color: Theme.text
+                                            font.pixelSize: 13
+                                            font.bold: true
+                                            elide: Text.ElideRight
+                                        }
+                                        Text {
+                                            width: parent.width
+                                            text: modelData.preview || "chat vuota"
+                                            color: Theme.textDim
+                                            font.pixelSize: 11
+                                            elide: Text.ElideRight
+                                        }
+                                    }
+                                    Text {
+                                        visible: cardArea.containsMouse && appState.sessions.length > 1
+                                        anchors.right: parent.right
+                                        anchors.top: parent.top
+                                        anchors.margins: 8
+                                        text: "✕"
+                                        color: Theme.textDim
+                                        font.pixelSize: 11
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            anchors.margins: -6
+                                            onClicked: backend.deleteSession(modelData.id)
+                                        }
+                                    }
+                                    MouseArea {
+                                        id: cardArea
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        z: -1
+                                        onClicked: backend.switchSession(modelData.id)
+                                    }
                                 }
                             }
-                        }
-                        MouseArea {
-                            id: sessionArea
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            z: -1
-                            onClicked: backend.switchSession(modelData.id)
                         }
                     }
                 }
             }
         }
 
-        // ── colonna principale ──────────────────────────────────────
-        ColumnLayout {
+        // ── pannello principale ─────────────────────────────────────
+        Glass {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            spacing: 12
+            glassRadius: Theme.radius
+            fill: Theme.cardSoft
+            clip: true
 
-            // ── isola barra superiore ───────────────────────────────
-            Glass {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 58
-                glassRadius: theme.radius
+            StackLayout {
+                id: pages
+                anchors.fill: parent
+                currentIndex: appState.mode === "terminal" ? 1 : 0
 
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: 10
-                    anchors.rightMargin: 14
-                    spacing: 10
-
-                    ToolButton {
-                        visible: appState.mode === "chat"
-                        text: "☰"
-                        font.pixelSize: 15
-                        contentItem: Text { text: parent.text; color: theme.textDim; font: parent.font
-                                            horizontalAlignment: Text.AlignHCenter
-                                            verticalAlignment: Text.AlignVCenter }
-                        background: Rectangle {
-                            color: parent.hovered ? Qt.rgba(1,1,1,0.08) : "transparent"; radius: 10
-                        }
-                        onClicked: sidebar.sidebarOpen = !sidebar.sidebarOpen
-                    }
-
-                    // Selettore modalità (capsula con cursore elastico)
-                    Rectangle {
-                        Layout.preferredWidth: 110
-                        Layout.preferredHeight: 32
-                        radius: 16
-                        color: Qt.rgba(0, 0, 0, 0.25)
-                        border.color: theme.glassLine
-                        Rectangle {
-                            id: modeThumb
-                            width: 52; height: 28; radius: 14
-                            y: 2
-                            x: appState.mode === "chat" ? 2 : parent.width - width - 2
-                            color: Qt.rgba(1, 1, 1, 0.12)
-                            border.color: Qt.rgba(0.35, 0.72, 1.0, 0.45)
-                            Behavior on x { SpringAnimation { spring: 3.5; damping: 0.28 } }
-                        }
-                        Row {
-                            anchors.fill: parent
-                            Item {
-                                width: parent.width / 2; height: parent.height
-                                Text { anchors.centerIn: parent; text: "💬"; font.pixelSize: 13; font.family: "Noto Color Emoji"
-                                       opacity: appState.mode === "chat" ? 1 : 0.4 }
-                                MouseArea { anchors.fill: parent; onClicked: backend.setMode("chat") }
-                            }
-                            Item {
-                                width: parent.width / 2; height: parent.height
-                                Text { anchors.centerIn: parent; text: ">_"; font.pixelSize: 11; font.bold: true; font.family: "monospace"; color: theme.text
-                                       opacity: appState.mode === "terminal" ? 1 : 0.4 }
-                                MouseArea { anchors.fill: parent; onClicked: backend.setMode("terminal") }
-                            }
-                        }
-                    }
-
-                    ThemedCombo {
-                        comboModel: appState.mode === "terminal" ? appState.terminalModels
-                                                                 : appState.models
-                        current: appState.mode === "terminal" ? appState.terminalModel
-                                                              : appState.model
-                        label: appState.mode === "terminal" ? "modello terminale" : "modello"
-                        Layout.fillWidth: true
-                        Layout.maximumWidth: 238
-                        Layout.minimumWidth: 130
-                        onPicked: (name) => appState.mode === "terminal"
-                                            ? backend.terminalSwitchModel(name)
-                                            : backend.switchModel(name)
-                    }
-                    ThemedCombo {
-                        visible: appState.mode === "chat"
-                        comboModel: appState.personalities.map(p => p.name)
-                        current: appState.personality
-                        label: "profilo"
-                        Layout.preferredWidth: 104
-                        onPicked: (name) => backend.switchPersonality(name)
-                    }
-                    ThemedCombo {
-                        visible: appState.mode === "chat"
-                        comboModel: appState.voices
-                        current: appState.voice
-                        label: "voce"
-                        Layout.preferredWidth: 120
-                        onPicked: (name) => backend.switchVoice(name)
-                    }
-
-                    Item { Layout.fillWidth: true }
-
-                    Rectangle {
-                        visible: appState.latency.total_ms !== undefined
-                        width: latText.width + 18; height: 24; radius: 12
-                        color: Qt.rgba(0, 0, 0, 0.25)
-                        border.color: theme.glassLine
-                        Text {
-                            id: latText
-                            anchors.centerIn: parent
-                            text: "⏱ " + (appState.latency.total_ms / 1000).toFixed(1) + "s"
-                            color: theme.textDim
-                            font.pixelSize: 11
-                        }
-                        MouseArea {
-                            id: latArea
-                            anchors.fill: parent
-                            hoverEnabled: true
-                        }
-                        ToolTip.visible: latArea.containsMouse
-                        ToolTip.text: "stt " + Math.round(appState.latency.stt_ms || 0)
-                                      + "ms · llm " + Math.round(appState.latency.llm_ms || 0)
-                                      + "ms · tts " + Math.round(appState.latency.tts_ms || 0) + "ms"
-                    }
-
-                    ToolButton {
-                        id: errBtn
-                        text: errorModel.count > 0 ? "⚠ " + errorModel.count : "⚠"
-                        font.pixelSize: 12
-                        contentItem: Text {
-                            text: errBtn.text
-                            color: errorModel.count > 0 ? theme.warn : theme.textDim
-                            font: errBtn.font
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
-                        }
-                        background: Rectangle {
-                            color: errBtn.hovered ? Qt.rgba(1,1,1,0.08) : "transparent"; radius: 10
-                        }
-                        onClicked: errorPanel.open = !errorPanel.open
-                    }
-
-                    Switch {
-                        id: ttsSwitch
-                        checked: appState.ttsEnabled
-                        onToggled: backend.setTtsEnabled(checked)
-                        indicator: Rectangle {
-                            implicitWidth: 42; implicitHeight: 22; radius: 11
-                            color: ttsSwitch.checked ? Qt.rgba(0.35, 0.72, 1.0, 0.55)
-                                                     : Qt.rgba(0, 0, 0, 0.30)
-                            border.color: theme.glassLine
-                            Behavior on color { ColorAnimation { duration: 140 } }
-                            Rectangle {
-                                x: ttsSwitch.checked ? parent.width - width - 2 : 2
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: 18; height: 18; radius: 9
-                                color: "#ffffff"
-                                Behavior on x { SpringAnimation { spring: 4; damping: 0.32 } }
-                            }
-                        }
-                        contentItem: Text {
-                            text: "🔊"
-                            font.pixelSize: 13
-                            font.family: "Noto Color Emoji"
-                            color: ttsSwitch.checked ? theme.text : theme.textDim
-                            leftPadding: ttsSwitch.indicator.width + 6
-                            verticalAlignment: Text.AlignVCenter
-                        }
-                    }
+                // dissolvenza al cambio pagina
+                NumberAnimation {
+                    id: pageFade
+                    target: pages
+                    property: "opacity"
+                    from: 0.25; to: 1.0
+                    duration: 260
+                    easing.type: Easing.OutCubic
                 }
-            }
 
-            // ── isola contenuto ─────────────────────────────────────
-            Glass {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                glassRadius: theme.radius
-                fillOpacity: 0.26
-                clip: true
+                // ── pagina chat ─────────────────────────────────────
+                ColumnLayout {
+                    spacing: 0
 
-                StackLayout {
-                    anchors.fill: parent
-                    currentIndex: appState.mode === "terminal" ? 1 : 0
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 54
+                        Layout.leftMargin: 20
+                        Layout.rightMargin: 20
+                        spacing: 8
 
-                    // ── pagina chat ─────────────────────────────────
+                        Text {
+                            text: appState.streaming || appState.voiceState === "thinking"
+                                  ? "Sto pensando…" : ""
+                            color: Theme.textDim
+                            font.pixelSize: 12
+                        }
+                        Item { Layout.fillWidth: true }
+
+                        Rectangle {
+                            visible: appState.latency.total_ms !== undefined
+                            width: latText.width + 18; height: 24; radius: 12
+                            color: Theme.card
+                            border.color: Theme.cardLine
+                            Text {
+                                id: latText
+                                anchors.centerIn: parent
+                                text: "⏱ " + (appState.latency.total_ms / 1000).toFixed(1) + "s"
+                                color: Theme.textDim
+                                font.pixelSize: 11
+                            }
+                            MouseArea { id: latArea; anchors.fill: parent; hoverEnabled: true }
+                            ToolTip.visible: latArea.containsMouse
+                            ToolTip.text: "stt " + Math.round(appState.latency.stt_ms || 0)
+                                          + "ms · llm " + Math.round(appState.latency.llm_ms || 0)
+                                          + "ms · tts " + Math.round(appState.latency.tts_ms || 0) + "ms"
+                        }
+
+                        ThemedCombo {
+                            comboModel: appState.models
+                            current: appState.model
+                            label: "modello"
+                            Layout.preferredWidth: 210
+                            onPicked: (name) => backend.switchModel(name)
+                        }
+                        ThemedCombo {
+                            comboModel: appState.personalities.map(p => p.name)
+                            current: appState.personality
+                            label: "profilo"
+                            Layout.preferredWidth: 100
+                            onPicked: (name) => backend.switchPersonality(name)
+                        }
+                        ThemedCombo {
+                            comboModel: appState.voices
+                            current: appState.voice
+                            label: "voce"
+                            Layout.preferredWidth: 118
+                            onPicked: (name) => backend.switchVoice(name)
+                        }
+                    }
+
+                    // saluto (con ingresso animato)
+                    Column {
+                        id: greeting
+                        Layout.alignment: Qt.AlignHCenter
+                        Layout.topMargin: 40
+                        visible: chatModel.count === 0 && appState.voiceState !== "loading"
+                        spacing: 6
+                        opacity: visible ? 1 : 0
+                        scale: visible ? 1 : 0.95
+                        Behavior on opacity { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
+                        Behavior on scale   { NumberAnimation { duration: 400; easing.type: Easing.OutBack } }
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: "Ciao, Mauro!"
+                            color: Theme.textDim
+                            font.pixelSize: 22
+                        }
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: "Come posso aiutarti?"
+                            color: Theme.text
+                            font.pixelSize: 28
+                            font.bold: true
+                        }
+                    }
+
                     ListView {
                         id: chatList
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
                         model: chatModel
                         spacing: 14
                         clip: true
-                        topMargin: 20; bottomMargin: 20; leftMargin: 22; rightMargin: 22
+                        topMargin: 10; bottomMargin: 16; leftMargin: 24; rightMargin: 24
                         boundsBehavior: Flickable.StopAtBounds
 
                         add: Transition {
-                            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 240 }
-                            NumberAnimation { property: "scale"; from: 0.92; to: 1; duration: 320
-                                              easing.type: Easing.OutBack; easing.overshoot: 1.2 }
+                            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 220 }
+                            NumberAnimation { property: "y"; from: chatList.height; duration: 260
+                                              easing.type: Easing.OutCubic }
+                        }
+                        displaced: Transition {
+                            NumberAnimation { property: "y"; duration: 200
+                                              easing.type: Easing.OutCubic }
                         }
 
                         ScrollBar.vertical: ScrollBar {
                             contentItem: Rectangle { implicitWidth: 5; radius: 3
-                                                     color: Qt.rgba(1,1,1,0.15) }
+                                                     color: Theme.scrollBar }
                         }
 
                         delegate: Item {
@@ -517,27 +553,25 @@ ApplicationWindow {
                                 id: bubble
                                 anchors.right: role === "user" ? parent.right : undefined
                                 anchors.left:  role === "user" ? undefined : parent.left
-                                width: Math.min(msgText.implicitWidth + 32, parent.width * 0.78)
-                                height: msgText.implicitHeight + 24
-                                radius: theme.radiusIn
-                                color: role === "user" ? Qt.rgba(0.35, 0.72, 1.0, 0.16)
-                                                       : Qt.rgba(1, 1, 1, 0.055)
+                                width: Math.min(msgText.implicitWidth + 34, parent.width * 0.80)
+                                height: msgText.implicitHeight + 26
+                                radius: Theme.radiusIn
+                                color: role === "user" ? Theme.userFill : Theme.mintFill
                                 border.width: 1
-                                border.color: role === "user" ? Qt.rgba(0.35, 0.72, 1.0, 0.32)
-                                                              : Qt.rgba(1, 1, 1, 0.09)
+                                border.color: role === "user" ? Theme.userLine : Theme.mintLine
 
                                 TextEdit {
                                     id: msgText
                                     anchors.fill: parent
-                                    anchors.margins: 12
+                                    anchors.margins: 13
                                     text: model.text
                                     textFormat: TextEdit.MarkdownText
-                                    color: theme.text
+                                    color: Theme.text
                                     font.pixelSize: 14
                                     wrapMode: Text.Wrap
                                     readOnly: true
                                     selectByMouse: true
-                                    selectionColor: theme.accent
+                                    selectionColor: Theme.accent
                                 }
                             }
                         }
@@ -550,158 +584,278 @@ ApplicationWindow {
                                 visible: appState.voiceState === "thinking" && !appState.streaming
                                 anchors.left: parent.left
                                 anchors.verticalCenter: parent.verticalCenter
-                                dotColor: theme.accent2
+                                dotColor: Theme.accent
                             }
                         }
                     }
 
-                    // ── pagina terminale ────────────────────────────
-                    TerminalPage {
-                        id: terminalPage
-                        feed: terminalFeed
-                    }
-                }
-            }
+                    Flow {
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 20
+                        Layout.rightMargin: 20
+                        spacing: 6
+                        visible: appState.attachments.length > 0
 
-            // Chip allegati (flottanti tra pannello e dock)
-            Flow {
-                Layout.fillWidth: true
-                Layout.leftMargin: 6
-                spacing: 6
-                visible: appState.mode === "chat" && appState.attachments.length > 0
-
-                Repeater {
-                    model: appState.attachments
-                    delegate: Rectangle {
-                        width: attRow.width + 20; height: 28; radius: 14
-                        color: Qt.rgba(0.35, 0.72, 1.0, 0.12)
-                        border.color: Qt.rgba(0.35, 0.72, 1.0, 0.35)
-                        Row {
-                            id: attRow
-                            anchors.centerIn: parent
-                            spacing: 6
-                            Text { text: "📄"; font.pixelSize: 11
-                                   anchors.verticalCenter: parent.verticalCenter }
-                            Text { text: modelData.name; color: theme.text; font.pixelSize: 11
-                                   anchors.verticalCenter: parent.verticalCenter }
-                            Text {
-                                text: "✕"; color: theme.textDim; font.pixelSize: 11
-                                anchors.verticalCenter: parent.verticalCenter
-                                MouseArea {
-                                    anchors.fill: parent; anchors.margins: -5
-                                    onClicked: {
-                                        var atts = appState.attachments.slice()
-                                        atts.splice(index, 1)
-                                        appState.attachments = atts
+                        Repeater {
+                            model: appState.attachments
+                            delegate: Rectangle {
+                                width: attRow.width + 20; height: 28; radius: 14
+                                color: Theme.cardStrong
+                                border.color: Theme.accentLine
+                                Row {
+                                    id: attRow
+                                    anchors.centerIn: parent
+                                    spacing: 6
+                                    Text { text: "📄"; font.pixelSize: 11; font.family: "Noto Color Emoji"
+                                           anchors.verticalCenter: parent.verticalCenter }
+                                    Text { text: modelData.name; color: Theme.text; font.pixelSize: 11
+                                           anchors.verticalCenter: parent.verticalCenter }
+                                    Text {
+                                        text: "✕"; color: Theme.textDim; font.pixelSize: 11
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        MouseArea {
+                                            anchors.fill: parent; anchors.margins: -5
+                                            onClicked: {
+                                                var atts = appState.attachments.slice()
+                                                atts.splice(index, 1)
+                                                appState.attachments = atts
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
-            }
 
-            // ── dock input (capsula flottante, solo chat) ───────────
-            Glass {
-                visible: appState.mode === "chat"
-                Layout.fillWidth: true
-                Layout.preferredHeight: 66
-                glassRadius: 33
-
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: 12
-                    anchors.rightMargin: 12
-                    spacing: 10
-
-                    StateOrb {
-                        voiceState: appState.voiceState
-                        onPressedChanged: pressed ? backend.pttDown() : backend.pttUp()
-                    }
-
-                    ToolButton {
-                        text: "📎"
-                        font.pixelSize: 15
-                        font.family: "Noto Color Emoji"
-                        contentItem: Text { text: parent.text; font: parent.font
-                                            color: theme.textDim
-                                            horizontalAlignment: Text.AlignHCenter
-                                            verticalAlignment: Text.AlignVCenter }
-                        background: Rectangle {
-                            color: parent.hovered ? Qt.rgba(1,1,1,0.08) : "transparent"; radius: 10
-                        }
-                        onClicked: fileDialog.open()
-                    }
-
-                    TextField {
-                        id: input
+                    // chips strumenti
+                    RowLayout {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 42
-                        placeholderText: appState.voiceState === "loading"
-                                         ? "Caricamento assistente…"
-                                         : "Scrivi, trascina un file, tieni premuto l'orb o di' la wake word…"
-                        placeholderTextColor: theme.textDim
-                        enabled: appState.voiceState !== "loading"
-                        color: theme.text
-                        font.pixelSize: 14
-                        leftPadding: 16
-                        background: Rectangle {
-                            color: Qt.rgba(0, 0, 0, 0.28)
-                            radius: 21
-                            border.color: input.activeFocus ? Qt.rgba(0.35, 0.72, 1.0, 0.55)
-                                                            : theme.glassLine
-                            Behavior on border.color { ColorAnimation { duration: 140 } }
+                        Layout.leftMargin: 20
+                        Layout.rightMargin: 20
+                        Layout.topMargin: 8
+                        spacing: 10
+
+                        component ToolChip: AbstractButton {
+                            id: chip
+                            property string emoji: ""
+                            property string label: ""
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 58
+                            scale: pressed ? 0.97 : (hovered ? 1.02 : 1.0)
+                            Behavior on scale { SpringAnimation { spring: 3.8; damping: 0.28 } }
+                            background: Rectangle {
+                                radius: Theme.radiusIn
+                                color: chip.hovered ? Theme.cardStrong : Theme.card
+                                border.color: Theme.cardLine
+                                Behavior on color { ColorAnimation { duration: 140 } }
+                            }
+                            contentItem: Row {
+                                spacing: 8
+                                leftPadding: 14
+                                Text {
+                                    text: chip.emoji
+                                    font.pixelSize: 18
+                                    font.family: "Noto Color Emoji"
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                                Text {
+                                    text: chip.label
+                                    color: Theme.text
+                                    font.pixelSize: 13
+                                    font.bold: true
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                            }
                         }
-                        onAccepted: sendCurrentInput()
+
+                        ToolChip {
+                            emoji: "📂"; label: "File"
+                            onClicked: backend.pickFiles()
+                        }
+                        ToolChip {
+                            emoji: "🖥️"; label: "Schermo"
+                            onClicked: {
+                                input.text = "Guarda lo schermo e "
+                                input.forceActiveFocus()
+                                input.cursorPosition = input.text.length
+                            }
+                        }
+                        ToolChip {
+                            emoji: "🌐"; label: "Web"
+                            onClicked: {
+                                input.text = "Cerca online "
+                                input.forceActiveFocus()
+                                input.cursorPosition = input.text.length
+                            }
+                        }
+                        ToolChip {
+                            emoji: "⚡"; label: "Terminale"
+                            onClicked: backend.setMode("terminal")
+                        }
                     }
 
-                    RoundButton {
-                        visible: appState.voiceState === "thinking" || appState.voiceState === "speaking"
-                        text: "◼"
-                        font.pixelSize: 12
-                        implicitWidth: 42; implicitHeight: 42
-                        background: Rectangle {
-                            color: theme.danger; radius: 21
-                            opacity: parent.hovered ? 1.0 : 0.85
+                    // input a pillola
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.margins: 20
+                        Layout.topMargin: 12
+                        spacing: 10
+
+                        StateOrb {
+                            voiceState: appState.voiceState
+                            onPressedChanged: pressed ? backend.pttDown() : backend.pttUp()
                         }
-                        contentItem: Text { text: parent.text; color: "white"; font: parent.font
-                                            horizontalAlignment: Text.AlignHCenter
-                                            verticalAlignment: Text.AlignVCenter }
-                        onClicked: backend.cancelTurn()
+
+                        RoundButton {
+                            text: "📎"
+                            font.pixelSize: 14
+                            font.family: "Noto Color Emoji"
+                            implicitWidth: 40; implicitHeight: 40
+                            scale: pressed ? 0.9 : (hovered ? 1.08 : 1.0)
+                            Behavior on scale { SpringAnimation { spring: 3.8; damping: 0.28 } }
+                            background: Rectangle {
+                                color: parent.hovered ? Theme.cardHover : Theme.card
+                                border.color: Theme.cardLine
+                                radius: 20
+                            }
+                            contentItem: Text { text: parent.text; font: parent.font
+                                                horizontalAlignment: Text.AlignHCenter
+                                                verticalAlignment: Text.AlignVCenter }
+                            onClicked: backend.pickFiles()
+                            ToolTip.visible: hovered; ToolTip.text: "Allega file (o trascinali qui)"
+                        }
+
+                        TextField {
+                            id: input
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 46
+                            placeholderText: appState.voiceState === "loading"
+                                             ? "Caricamento assistente…"
+                                             : "Chiedimi qualsiasi cosa…"
+                            placeholderTextColor: Theme.textDim
+                            enabled: appState.voiceState !== "loading"
+                            color: Theme.text
+                            font.pixelSize: 14
+                            leftPadding: 18
+                            background: Rectangle {
+                                color: Theme.inputFill
+                                radius: 23
+                                border.color: input.activeFocus ? Theme.accentLine : Theme.cardLine
+                                Behavior on border.color { ColorAnimation { duration: 140 } }
+                            }
+                            onAccepted: sendCurrentInput()
+                        }
+
+                        RoundButton {
+                            visible: appState.voiceState === "thinking" || appState.voiceState === "speaking"
+                            text: "◼"
+                            font.pixelSize: 12
+                            implicitWidth: 44; implicitHeight: 44
+                            background: Rectangle {
+                                color: Theme.danger; radius: 22
+                                opacity: parent.hovered ? 1.0 : 0.85
+                            }
+                            contentItem: Text { text: parent.text; color: "white"; font: parent.font
+                                                horizontalAlignment: Text.AlignHCenter
+                                                verticalAlignment: Text.AlignVCenter }
+                            onClicked: backend.cancelTurn()
+                        }
+
+                        RoundButton {
+                            text: "↑"
+                            font.pixelSize: 17
+                            font.bold: true
+                            implicitWidth: 44; implicitHeight: 44
+                            enabled: input.text.trim().length > 0 || appState.attachments.length > 0
+                            scale: enabled ? (hovered ? 1.08 : 1.0) : 0.9
+                            Behavior on scale { SpringAnimation { spring: 3.5; damping: 0.3 } }
+                            background: Rectangle {
+                                color: parent.enabled ? Theme.accent : Theme.card
+                                border.color: Theme.cardLine
+                                radius: 22
+                                Behavior on color { ColorAnimation { duration: 140 } }
+                            }
+                            contentItem: Text { text: parent.text
+                                                color: parent.enabled ? "white" : Theme.textDim
+                                                font: parent.font
+                                                horizontalAlignment: Text.AlignHCenter
+                                                verticalAlignment: Text.AlignVCenter }
+                            onClicked: sendCurrentInput()
+                        }
+                    }
+                }
+
+                // ── pagina terminale ────────────────────────────────
+                ColumnLayout {
+                    spacing: 0
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 54
+                        Layout.leftMargin: 20
+                        Layout.rightMargin: 20
+                        Text {
+                            text: "Terminale"
+                            color: Theme.text
+                            font.pixelSize: 18
+                            font.bold: true
+                        }
+                        Item { Layout.fillWidth: true }
+                        ThemedCombo {
+                            comboModel: appState.terminalModels
+                            current: appState.terminalModel
+                            label: "modello terminale"
+                            Layout.preferredWidth: 220
+                            onPicked: (name) => backend.terminalSwitchModel(name)
+                        }
                     }
 
-                    RoundButton {
-                        text: "➤"
-                        font.pixelSize: 15
-                        implicitWidth: 42; implicitHeight: 42
-                        enabled: input.text.trim().length > 0 || appState.attachments.length > 0
-                        scale: enabled ? 1.0 : 0.9
-                        Behavior on scale { SpringAnimation { spring: 3.5; damping: 0.3 } }
-                        background: Rectangle {
-                            color: parent.enabled ? theme.accent : Qt.rgba(1,1,1,0.07)
-                            radius: 21
-                            Behavior on color { ColorAnimation { duration: 140 } }
-                        }
-                        contentItem: Text { text: parent.text
-                                            color: parent.enabled ? "#0a0d12" : theme.textDim
-                                            font: parent.font
-                                            horizontalAlignment: Text.AlignHCenter
-                                            verticalAlignment: Text.AlignVCenter }
-                        onClicked: sendCurrentInput()
+                    TerminalPage {
+                        id: terminalPage
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        feed: terminalFeed
                     }
                 }
             }
         }
     }
 
-    // ── pannello errori (overlay in basso a destra) ─────────────────
+    // ── drag & drop (sopra i pannelli, così l'overlay è visibile) ───
+    DropArea {
+        anchors.fill: parent
+        enabled: appState.mode === "chat"
+        onDropped: (drop) => {
+            if (drop.hasUrls)
+                for (var i = 0; i < drop.urls.length; i++)
+                    backend.uploadFile(drop.urls[i].toString())
+        }
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: 12
+            visible: parent.containsDrag
+            color: Qt.rgba(0.24, 0.49, 0.97, 0.08)
+            border.color: Theme.accent
+            border.width: 2
+            radius: Theme.radius
+            Text {
+                anchors.centerIn: parent
+                text: "Rilascia per allegare"
+                color: Theme.accent
+                font.pixelSize: 20
+                font.bold: true
+            }
+        }
+    }
+
+    // ── pannello errori (overlay) ───────────────────────────────────
     ErrorPanel {
         id: errorPanel
         errors: errorModel
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        anchors.margins: 20
-        width: Math.min(460, parent.width - 40)
+        anchors.margins: 22
+        width: Math.min(460, parent.width - 44)
         z: 50
     }
 }

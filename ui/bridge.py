@@ -166,7 +166,16 @@ class UIBridge(VoiceLoop):
     def new_session(self, name: str | None = None) -> str:
         import uuid, time as _t
         sid = str(uuid.uuid4())[:8]
-        n = name or f"Chat {len(self._sessions) + 1}"
+        n = name
+        if not n:
+            # Primo numero LIBERO a partire da 1: niente duplicati dopo le
+            # cancellazioni e i buchi vengono riusati (elimini "Chat 1" →
+            # la prossima è di nuovo "Chat 1", non "Chat 5").
+            existing = {s["name"] for s in self._sessions.values()}
+            i = 1
+            while f"Chat {i}" in existing:
+                i += 1
+            n = f"Chat {i}"
         self._register_session(sid, n)
         self._session_id = sid
         self._emit({"type": "sessions", "sessions": self.list_sessions()})
@@ -205,6 +214,54 @@ class UIBridge(VoiceLoop):
         self._persist()
         self._emit({"type": "sessions", "sessions": self.list_sessions()})
         return True
+
+    async def _auto_title_session(self, sid: str) -> None:
+        """
+        Genera col modello attivo un titolo breve che descriva la chat e
+        rinomina la sessione. Agisce SOLO finché il nome è ancora quello
+        automatico ("Chat N"): un rinomino manuale non viene mai toccato,
+        e una volta titolata la sessione non si ri-titola. Best-effort.
+        """
+        import re as _re
+
+        s = self._sessions.get(sid)
+        if not s or not _re.match(r"^Chat \d+$", s["name"]):
+            return
+        msgs = s.get("messages", [])
+        if len(msgs) < 2:
+            return
+        if self._orch is None or self._orch._llm is None:
+            return
+
+        convo = "\n".join(
+            f"{'Utente' if m['role'] == 'user' else 'Assistente'}: {m['text'][:200]}"
+            for m in msgs[:4]
+        )
+        prompt = (
+            "Genera un titolo brevissimo (massimo 4 parole, in italiano, "
+            "senza virgolette e senza punto finale) che descriva questa "
+            f"conversazione:\n\n{convo}\n\nTitolo:"
+        )
+        try:
+            from core.context import ModelRole
+            from modules.llm import Message, Role
+
+            # Stesso vincolo VRAM delle altre chiamate ausiliarie: sempre il
+            # modello attivo del turno, mai il default .env.
+            resp = await self._orch._llm.chat(
+                [Message(role=Role.USER, content=prompt)],
+                ModelRole.CHAT,
+                model=self._orch.active_model(),
+                options={"think": False, "num_predict": 16, "temperature": 0.3},
+            )
+            title = resp.content.strip().splitlines()[0].strip().strip('"').strip("'").rstrip(".")
+            title = title[:40].strip()
+        except Exception as exc:
+            logger.debug("ui.bridge | auto-titolo fallito: {}", exc)
+            return
+        if title and _re.match(r"^Chat \d+$", self._sessions.get(sid, {}).get("name", "")):
+            self.rename_session(sid, title)
+            logger.info("ui.bridge | sessione {} auto-titolata: '{}'", sid, title)
 
     def rename_session(self, sid: str, name: str) -> bool:
         if sid not in self._sessions:
@@ -628,6 +685,10 @@ class UIBridge(VoiceLoop):
                     "total_ms": total,
                 },
             })
+
+            # Auto-titolo della sessione dal contenuto (fire-and-forget,
+            # agisce solo finché il nome è ancora "Chat N").
+            self._spawn(self._auto_title_session(self._session_id))
 
     def _on_llm_chunk(self, chunk: str) -> None:
         # Hook del loop base: inoltra ogni chunk LLM alla UI via WebSocket.

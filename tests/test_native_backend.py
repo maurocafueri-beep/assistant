@@ -153,6 +153,111 @@ class TestErrorAndTerminalRouting:
         assert got and got[0][0]["ok"] is True
 
 
+class TestUiSettings:
+    def test_lettura_e_scrittura(self, backend, tmp_path, monkeypatch):
+        import ui.server as srv
+        monkeypatch.setattr(srv, "_SETTINGS_FILE", tmp_path / "ui-settings.json")
+        assert backend.uiSetting("ui_theme") == ""
+        backend.saveUiSetting("ui_theme", "dark")
+        assert backend.uiSetting("ui_theme") == "dark"
+
+
+def _bridge():
+    from ui.bridge import UIBridge
+    b = UIBridge.__new__(UIBridge)
+    b._sessions = {}
+    b._session_id = ""
+    return b
+
+
+class TestNomiSessioneUnici:
+    def test_parte_da_chat_1(self):
+        b = _bridge()
+        b.new_session()
+        assert [s["name"] for s in b._sessions.values()] == ["Chat 1"]
+
+    def test_nomi_progressivi(self):
+        b = _bridge()
+        b.new_session(); b.new_session(); b.new_session()
+        names = [s["name"] for s in b._sessions.values()]
+        assert names == ["Chat 1", "Chat 2", "Chat 3"]
+
+    def test_riusa_il_numero_libero_piu_basso(self):
+        b = _bridge()
+        sids = [b.new_session() for _ in range(3)]
+        del b._sessions[sids[1]]                 # libera "Chat 2"
+        b.new_session()
+        names = sorted(s["name"] for s in b._sessions.values())
+        assert len(names) == len(set(names)), f"nomi duplicati: {names}"
+        assert names == ["Chat 1", "Chat 2", "Chat 3"]
+
+    def test_nome_esplicito_rispettato(self):
+        b = _bridge()
+        b.new_session("Ricette")
+        assert [s["name"] for s in b._sessions.values()] == ["Ricette"]
+
+
+class TestAutoTitolo:
+    def _bridge_llm(self, title="Ottimizzazione del TTS"):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+        b = _bridge()
+        b._ws = MagicMock()
+        b._ws.broadcast = AsyncMock()
+        b._bg_tasks = set()
+        b._persist_cb = None
+        orch = MagicMock()
+        orch._llm.chat = AsyncMock(return_value=SimpleNamespace(content=title))
+        orch.active_model = MagicMock(return_value="modello-attivo")
+        b._orch = orch
+        return b
+
+    def _add_msgs(self, b, sid):
+        b._sessions[sid]["messages"] = [
+            {"role": "user", "text": "Come velocizzo il TTS?"},
+            {"role": "asst", "text": "Usa il modello 0.6B."},
+        ]
+
+    async def test_rinomina_dal_contenuto(self):
+        b = self._bridge_llm()
+        sid = b.new_session()
+        self._add_msgs(b, sid)
+        await b._auto_title_session(sid)
+        assert b._sessions[sid]["name"] == "Ottimizzazione del TTS"
+        # gira sul modello attivo (vincolo VRAM), non sul default .env
+        assert b._orch._llm.chat.call_args.kwargs["model"] == "modello-attivo"
+
+    async def test_nome_manuale_non_toccato(self):
+        b = self._bridge_llm()
+        sid = b.new_session("Le mie ricette")
+        self._add_msgs(b, sid)
+        await b._auto_title_session(sid)
+        assert b._sessions[sid]["name"] == "Le mie ricette"
+        b._orch._llm.chat.assert_not_called()
+
+    async def test_chat_vuota_non_titolata(self):
+        b = self._bridge_llm()
+        sid = b.new_session()
+        await b._auto_title_session(sid)
+        assert b._sessions[sid]["name"] == "Chat 1"
+        b._orch._llm.chat.assert_not_called()
+
+    async def test_titolo_ripulito(self):
+        b = self._bridge_llm(title='"Ricette di pasta."\nAltro testo')
+        sid = b.new_session()
+        self._add_msgs(b, sid)
+        await b._auto_title_session(sid)
+        assert b._sessions[sid]["name"] == "Ricette di pasta"
+
+    async def test_llm_fallito_non_solleva(self):
+        b = self._bridge_llm()
+        b._orch._llm.chat.side_effect = RuntimeError("ollama giù")
+        sid = b.new_session()
+        self._add_msgs(b, sid)
+        await b._auto_title_session(sid)          # non deve propagare
+        assert b._sessions[sid]["name"] == "Chat 1"
+
+
 class TestSaveUpload:
     def test_upload_valido(self, tmp_path, monkeypatch):
         import ui.server as server_mod
