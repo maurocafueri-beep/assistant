@@ -876,6 +876,13 @@ class VoiceLoop:
         # Esponi la coda così interrupt_tts() può svuotarla se il TTS viene
         # mutato mentre l'assistente parla.
         self._active_audio_queue = audio_queue
+        # Fine-produzione: il player NON deve dipendere solo dal sentinel None
+        # in coda — interrupt_tts() svuota la coda e in una race può ingoiare
+        # anche il sentinel, lasciando il player (e quindi l'intero turno)
+        # appeso per sempre su get(). Con questo evento il player esce
+        # comunque: era il bug del "mute durante la generazione che blocca
+        # la chat in stato speaking".
+        producer_done = asyncio.Event()
 
         # Strumentazione latenze (senza patchare metodi condivisi):
         #   _last_llm_ms = stream_start → primo chunk LLM
@@ -887,7 +894,14 @@ class VoiceLoop:
 
         async def _player() -> None:
             while True:
-                audio = await audio_queue.get()
+                try:
+                    audio = await asyncio.wait_for(audio_queue.get(), timeout=0.25)
+                except asyncio.TimeoutError:
+                    # Produzione finita e coda vuota (sentinel eventualmente
+                    # perso in una race col drain di interrupt_tts): esci.
+                    if producer_done.is_set():
+                        break
+                    continue
                 if audio is None:
                     break
                 # TTS mutato a metà turno: scarta l'audio senza riprodurlo
@@ -973,10 +987,12 @@ class VoiceLoop:
             if not cancelled and buf.strip():
                 await _synth(buf.strip())
         except Exception:
+            producer_done.set()
             audio_queue.put_nowait(None)
             player_task.cancel()
             raise
         finally:
+            producer_done.set()
             if cancelled:
                 # Interruzione: scarta l'audio ancora in coda e taglia la
                 # riproduzione corrente, senza attendere il drain naturale.
