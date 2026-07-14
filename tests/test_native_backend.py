@@ -153,6 +153,36 @@ class TestErrorAndTerminalRouting:
         assert got and got[0][0]["ok"] is True
 
 
+class TestSystemStatusRouting:
+    def test_payload_system_instradato(self, backend):
+        got = _capture(backend.systemStatus)
+        backend._on_event({"type": "_system", "gpus": [], "web_ok": True})
+        assert got and got[0][0]["web_ok"] is True
+
+    def test_set_tts_speed_clampata_e_persistita(self, backend, tmp_path, monkeypatch):
+        import ui.server as srv
+        monkeypatch.setattr(srv, "_SETTINGS_FILE", tmp_path / "ui-settings.json")
+        # bridge finto con event loop reale per _call_on_loop
+        import asyncio
+        from unittest.mock import MagicMock
+        loop = asyncio.new_event_loop()
+        try:
+            tts = MagicMock()
+            tts._speed = 1.0
+            ui_loop = MagicMock()
+            ui_loop._tts = tts
+            backend._ui_loop = ui_loop
+            backend._aio_loop = loop
+            backend.setTtsSpeed(9.9)                 # oltre il massimo → clamp a 2.0
+            loop.run_until_complete(asyncio.sleep(0.05))
+            assert tts._speed == 2.0
+            assert backend.uiSetting("tts_speed") == "2.0"
+        finally:
+            backend._ui_loop = None
+            backend._aio_loop = None
+            loop.close()
+
+
 class TestUiSettings:
     def test_lettura_e_scrittura(self, backend, tmp_path, monkeypatch):
         import ui.server as srv

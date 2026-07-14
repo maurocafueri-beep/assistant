@@ -26,7 +26,8 @@ ApplicationWindow {
     // ── stato applicativo ───────────────────────────────────────────
     QtObject {
         id: appState
-        property string mode: "chat"
+        property string mode: "chat"          // modalità del bridge (chat|terminal)
+        property string page: "chat"          // pagina UI (chat|terminal|system)
         property string voiceState: "loading"
         property string model: ""
         property string personality: ""
@@ -47,6 +48,7 @@ ApplicationWindow {
     ListModel { id: chatModel }
     ListModel { id: errorModel }
     ListModel { id: terminalFeed }
+    ListModel { id: latencyHistory }   // {ms} — ultime latenze LLM (sparkline)
 
     function nowTime() { return Qt.formatTime(new Date(), "HH:mm:ss") }
 
@@ -132,7 +134,14 @@ ApplicationWindow {
         }
         function onStatsChanged(p) {
             appState.streaming = false
-            if (p.latency) appState.latency = p.latency
+            if (p.latency) {
+                appState.latency = p.latency
+                if (p.latency.llm_ms) {
+                    latencyHistory.append({ ms: p.latency.llm_ms })
+                    if (latencyHistory.count > 30) latencyHistory.remove(0)
+                    systemPage.refreshSpark()
+                }
+            }
         }
         function onSessionsChanged(list)  { appState.sessions = list }
         function onSessionSwitched(p) {
@@ -146,7 +155,11 @@ ApplicationWindow {
         function onPersonalityChanged(name, display) { appState.personality = name }
         function onVoiceChanged(name)     { appState.voice = name }
         function onTtsChanged(en)         { appState.ttsEnabled = en }
-        function onModeChanged(m)         { appState.mode = m; pageFade.restart() }
+        function onModeChanged(m) {
+            appState.mode = m
+            appState.page = m          // chat/terminal seguono il bridge
+            pageFade.restart()
+        }
         function onModelsListed(list)     { appState.models = list }
         function onErrorOccurred(p)       { pushError(p.source || "app", p.message || "") }
         function onBackendError(msg)      { pushError("backend", msg) }
@@ -160,6 +173,7 @@ ApplicationWindow {
                 errorPanel.open = true
             }
         }
+        function onSystemStatus(p)        { systemPage.handleStatus(p) }
         function onTerminalEvent(p) {
             if (p.type === "terminal.state") {
                 appState.terminalModels = p.models || []
@@ -218,7 +232,8 @@ ApplicationWindow {
                     radius: 22
                     color: rb.active ? Theme.accent
                                      : (rb.hovered ? Theme.cardHover : Theme.card)
-                    border.color: Theme.cardLine
+                    border.color: rb.active ? Qt.lighter(Theme.accent, 1.25) : Theme.cardLine
+                    border.width: rb.active ? 2 : 1
                     Behavior on color { ColorAnimation { duration: 140 } }
                 }
                 contentItem: Text {
@@ -241,15 +256,21 @@ ApplicationWindow {
             }
             RailButton {
                 glyph: "💬"; emoji: true
-                active: appState.mode === "chat"
-                onClicked: backend.setMode("chat")
+                active: appState.page === "chat"
+                onClicked: { backend.setMode("chat"); appState.page = "chat"; pageFade.restart() }
                 ToolTip.visible: hovered; ToolTip.text: "Chat"
             }
             RailButton {
                 glyph: ">_"
-                active: appState.mode === "terminal"
-                onClicked: backend.setMode("terminal")
+                active: appState.page === "terminal"
+                onClicked: { backend.setMode("terminal"); appState.page = "terminal"; pageFade.restart() }
                 ToolTip.visible: hovered; ToolTip.text: "Terminale"
+            }
+            RailButton {
+                glyph: "📊"; emoji: true
+                active: appState.page === "system"
+                onClicked: { appState.page = "system"; pageFade.restart() }
+                ToolTip.visible: hovered; ToolTip.text: "Sistema"
             }
 
             Item { Layout.fillHeight: true }
@@ -305,7 +326,7 @@ ApplicationWindow {
         // ── pannello sessioni ───────────────────────────────────────
         Glass {
             Layout.fillHeight: true
-            Layout.preferredWidth: appState.mode === "chat" ? 268 : 0
+            Layout.preferredWidth: appState.page === "chat" ? 268 : 0
             glassRadius: Theme.radius
             fill: Theme.cardSoft
             clip: true
@@ -358,7 +379,10 @@ ApplicationWindow {
                                                   ? Theme.accentLine : Theme.cardLine
                                     Behavior on color { ColorAnimation { duration: 120 } }
 
+                                    property bool editing: false
+
                                     Column {
+                                        visible: !editing
                                         anchors.left: parent.left
                                         anchors.right: parent.right
                                         anchors.verticalCenter: parent.verticalCenter
@@ -381,6 +405,28 @@ ApplicationWindow {
                                             elide: Text.ElideRight
                                         }
                                     }
+
+                                    // rinomina inline (doppio clic)
+                                    TextField {
+                                        visible: editing
+                                        anchors.fill: parent
+                                        anchors.margins: 8
+                                        text: modelData.name || ""
+                                        color: Theme.text
+                                        font.pixelSize: 13
+                                        background: Rectangle {
+                                            color: Theme.inputFill; radius: 10
+                                            border.color: Theme.accentLine
+                                        }
+                                        onVisibleChanged: if (visible) { forceActiveFocus(); selectAll() }
+                                        onAccepted: {
+                                            if (text.trim().length > 0)
+                                                backend.renameSession(modelData.id, text.trim())
+                                            editing = false
+                                        }
+                                        onActiveFocusChanged: if (!activeFocus) editing = false
+                                        Keys.onEscapePressed: editing = false
+                                    }
                                     Text {
                                         visible: cardArea.containsMouse && appState.sessions.length > 1
                                         anchors.right: parent.right
@@ -401,6 +447,7 @@ ApplicationWindow {
                                         hoverEnabled: true
                                         z: -1
                                         onClicked: backend.switchSession(modelData.id)
+                                        onDoubleClicked: editing = true
                                     }
                                 }
                             }
@@ -421,7 +468,7 @@ ApplicationWindow {
             StackLayout {
                 id: pages
                 anchors.fill: parent
-                currentIndex: appState.mode === "terminal" ? 1 : 0
+                currentIndex: appState.page === "terminal" ? 1 : appState.page === "system" ? 2 : 0
 
                 // dissolvenza al cambio pagina
                 NumberAnimation {
@@ -549,11 +596,34 @@ ApplicationWindow {
                             width: chatList.width - chatList.leftMargin - chatList.rightMargin
                             height: bubble.height
 
+                            MouseArea {
+                                id: rowHover
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                acceptedButtons: Qt.NoButton
+                            }
+
+                            // avatar dell'assistente
+                            Rectangle {
+                                visible: role !== "user"
+                                width: 22; height: 22; radius: 11
+                                anchors.top: bubble.top
+                                gradient: Gradient {
+                                    GradientStop { position: 0.0; color: "#8fb8fe" }
+                                    GradientStop { position: 1.0; color: "#c39efb" }
+                                }
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "✦"; color: "white"; font.pixelSize: 10
+                                }
+                            }
+
                             Rectangle {
                                 id: bubble
                                 anchors.right: role === "user" ? parent.right : undefined
                                 anchors.left:  role === "user" ? undefined : parent.left
-                                width: Math.min(msgText.implicitWidth + 34, parent.width * 0.80)
+                                anchors.leftMargin: role === "user" ? 0 : 30
+                                width: Math.min(msgText.implicitWidth + 34, parent.width * 0.78)
                                 height: msgText.implicitHeight + 26
                                 radius: Theme.radiusIn
                                 color: role === "user" ? Theme.userFill : Theme.mintFill
@@ -572,6 +642,37 @@ ApplicationWindow {
                                     readOnly: true
                                     selectByMouse: true
                                     selectionColor: Theme.accent
+                                }
+
+                                // copia messaggio (visibile in hover)
+                                Rectangle {
+                                    visible: rowHover.containsMouse || copyArea.containsMouse
+                                    width: 26; height: 26; radius: 13
+                                    anchors.top: parent.top
+                                    anchors.right: parent.right
+                                    anchors.margins: -8
+                                    color: copyArea.containsMouse ? Theme.accent : Theme.cardStrong
+                                    border.color: Theme.cardLine
+                                    opacity: visible ? 1 : 0
+                                    Behavior on opacity { NumberAnimation { duration: 120 } }
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: "⧉"
+                                        color: copyArea.containsMouse ? "white" : Theme.textDim
+                                        font.pixelSize: 12
+                                    }
+                                    MouseArea {
+                                        id: copyArea
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        onClicked: {
+                                            msgText.selectAll()
+                                            msgText.copy()
+                                            msgText.deselect()
+                                        }
+                                    }
+                                    ToolTip.visible: copyArea.containsMouse
+                                    ToolTip.text: "Copia messaggio"
                                 }
                             }
                         }
@@ -650,13 +751,19 @@ ApplicationWindow {
                                 Behavior on color { ColorAnimation { duration: 140 } }
                             }
                             contentItem: Row {
-                                spacing: 8
-                                leftPadding: 14
-                                Text {
-                                    text: chip.emoji
-                                    font.pixelSize: 18
-                                    font.family: "Noto Color Emoji"
+                                spacing: 10
+                                leftPadding: 12
+                                Rectangle {
+                                    width: 34; height: 34; radius: 11
                                     anchors.verticalCenter: parent.verticalCenter
+                                    color: Theme.accentSoft
+                                    border.color: Theme.accentLine
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: chip.emoji
+                                        font.pixelSize: 16
+                                        font.family: "Noto Color Emoji"
+                                    }
                                 }
                                 Text {
                                     text: chip.label
@@ -762,6 +869,7 @@ ApplicationWindow {
                         }
 
                         RoundButton {
+                            id: sendBtn
                             text: "↑"
                             font.pixelSize: 17
                             font.bold: true
@@ -770,10 +878,14 @@ ApplicationWindow {
                             scale: enabled ? (hovered ? 1.08 : 1.0) : 0.9
                             Behavior on scale { SpringAnimation { spring: 3.5; damping: 0.3 } }
                             background: Rectangle {
-                                color: parent.enabled ? Theme.accent : Theme.card
-                                border.color: Theme.cardLine
                                 radius: 22
-                                Behavior on color { ColorAnimation { duration: 140 } }
+                                border.color: Theme.cardLine
+                                gradient: Gradient {
+                                    GradientStop { position: 0.0
+                                        color: sendBtn.enabled ? "#4f8df9" : Theme.card }
+                                    GradientStop { position: 1.0
+                                        color: sendBtn.enabled ? "#8b6cf6" : Theme.card }
+                                }
                             }
                             contentItem: Text { text: parent.text
                                                 color: parent.enabled ? "white" : Theme.textDim
@@ -815,6 +927,35 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         feed: terminalFeed
+                    }
+                }
+
+                // ── pagina sistema ──────────────────────────────────
+                ColumnLayout {
+                    spacing: 0
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 54
+                        Layout.leftMargin: 20
+                        Layout.rightMargin: 20
+                        Text {
+                            text: "Sistema"
+                            color: Theme.text
+                            font.pixelSize: 18
+                            font.bold: true
+                        }
+                        Item { Layout.fillWidth: true }
+                        Text {
+                            text: "aggiornamento automatico"
+                            color: Theme.textDim
+                            font.pixelSize: 11
+                        }
+                    }
+                    SystemPage {
+                        id: systemPage
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        latencyHistory: latencyHistory
                     }
                 }
             }

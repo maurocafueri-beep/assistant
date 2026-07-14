@@ -104,6 +104,16 @@ async def serve_native(
     try:
         async with ui_loop:
             await _restore_ui_settings(ui_loop, terminal_bridge)
+            # Velocità voce salvata dalla sezione Sistema (slider): il client
+            # TTS la legge alla costruzione, qui la ri-applichiamo a runtime.
+            try:
+                from ui.server import _load_ui_settings
+                sp = (_load_ui_settings() or {}).get("tts_speed")
+                if sp and ui_loop._tts is not None:
+                    ui_loop._tts._speed = max(0.5, min(2.0, float(sp)))
+                    logger.info("ui.native | velocità voce ripristinata → {}x", sp)
+            except Exception as exc:
+                logger.warning("ui.native | restore tts_speed: {}", exc)
             try:
                 ui_loop.restore_histories_from_sessions()
             except Exception as exc:
@@ -204,6 +214,7 @@ class Backend(QObject):
     errorOccurred      = pyqtSignal('QVariant')   # {source, message} → pannello errori
     uploadFinished     = pyqtSignal('QVariant')   # {ok, path, name} | {ok, error}
     terminalEvent      = pyqtSignal('QVariant')   # payload terminal.* integrale
+    systemStatus       = pyqtSignal('QVariant')   # da requestSystemStatus()
 
     def __init__(self, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
@@ -278,6 +289,7 @@ class Backend(QObject):
         elif t == "mode":           self.modeChanged.emit(payload.get("mode", "chat"))
         elif t == "_models":        self.modelsListed.emit(payload.get("models", []))
         elif t == "_upload":        self.uploadFinished.emit(payload)
+        elif t == "_system":        self.systemStatus.emit(payload)
         elif t == "error":          self.errorOccurred.emit(payload)
         elif t.startswith("terminal."):
             self.terminalEvent.emit(payload)
@@ -400,6 +412,121 @@ class Backend(QObject):
     @pyqtSlot(str, str)
     def saveUiSetting(self, key: str, value: str) -> None:
         self._save_setting(key, value)
+
+    @pyqtSlot(float)
+    def setTtsSpeed(self, speed: float) -> None:
+        """Velocità del parlato a runtime (time-stretch WSOLA server-side):
+        applica subito al client TTS e persiste per i riavvii."""
+        speed = max(0.5, min(2.0, float(speed)))
+
+        def _apply() -> None:
+            tts = getattr(self._ui_loop, "_tts", None)
+            if tts is not None:
+                tts._speed = speed
+
+        self._call_on_loop(_apply,
+                           on_result=lambda _r: self._save_setting("tts_speed", speed))
+
+    # stato di sistema (sezione "Sistema" della UI) ------------------------
+
+    @pyqtSlot()
+    def requestSystemStatus(self) -> None:
+        """
+        Raccoglie lo stato di servizi, GPU e modelli ed emette il payload
+        `_system` → segnale systemStatus. Best-effort su ogni voce: un
+        servizio giù non blocca gli altri (probe con timeout corti).
+        """
+        if self._aio_loop is None:
+            return
+
+        async def _do() -> None:
+            import asyncio as _aio
+
+            import httpx
+
+            from config.settings import settings as _s
+
+            async def _gpus() -> list:
+                def _run() -> list:
+                    import subprocess
+                    r = subprocess.run(
+                        ["nvidia-smi",
+                         "--query-gpu=name,memory.used,memory.total,utilization.gpu",
+                         "--format=csv,noheader,nounits"],
+                        capture_output=True, timeout=5,
+                    )
+                    out = []
+                    for line in r.stdout.decode().strip().splitlines():
+                        parts = [p.strip() for p in line.split(",")]
+                        if len(parts) >= 4:
+                            out.append({"name": parts[0], "used": int(parts[1]),
+                                        "total": int(parts[2]), "util": int(parts[3])})
+                    return out
+                try:
+                    return await _aio.to_thread(_run)
+                except Exception:
+                    return []
+
+            async def _ollama(client: "httpx.AsyncClient") -> dict:
+                try:
+                    v = await client.get(f"{_s.ollama.base_url}/api/version")
+                    ps = await client.get(f"{_s.ollama.base_url}/api/ps")
+                    models = [
+                        {"name": m.get("name", "?"),
+                         "vram_mb": round(m.get("size_vram", 0) / 1e6)}
+                        for m in ps.json().get("models", [])
+                    ]
+                    return {"ok": True, "version": v.json().get("version", "?"),
+                            "models": models}
+                except Exception:
+                    return {"ok": False, "version": "", "models": []}
+
+            async def _tts(client: "httpx.AsyncClient") -> dict:
+                try:
+                    r = await client.get("http://127.0.0.1:8765/health")
+                    j = r.json()
+                    return {"ok": True, "model": j.get("model", ""),
+                            "profile": j.get("profile", "")}
+                except Exception:
+                    return {"ok": False, "model": "", "profile": ""}
+
+            async def _web(client: "httpx.AsyncClient") -> bool:
+                try:
+                    r = await client.get(_s.web_search.searxng_url)
+                    return r.status_code < 500
+                except Exception:
+                    return False
+
+            async with httpx.AsyncClient(timeout=2.5) as client:
+                gpus, oll, tts, web = await _aio.gather(
+                    _gpus(), _ollama(client), _tts(client), _web(client),
+                )
+
+            stats: dict = {}
+            try:
+                stats = self._ui_loop.stats.to_log_dict()
+            except Exception:
+                pass
+
+            speed = 1.0
+            try:
+                speed = float(getattr(self._ui_loop._tts, "_speed", 1.0))
+            except Exception:
+                pass
+
+            self._emitter.event.emit({
+                "type": "_system",
+                "gpus": gpus,
+                "ollama": oll,
+                "tts": tts,
+                "web_ok": web,
+                "wake": {"enabled": bool(getattr(_s.wake_word, "enabled", False)),
+                         "model": getattr(_s.wake_word, "model", "")},
+                "stats": stats,
+                "tts_speed": speed,
+            })
+
+        self._call_async(_do())
 
     # sessioni ---------------------------------------------------------
 

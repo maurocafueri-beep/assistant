@@ -7,7 +7,7 @@ stack (niente orchestratore/STT/TTS) e senza display.
 
 Uso:
     QT_QPA_PLATFORM=offscreen venv-runtime/bin/python tools/ui_snapshot.py out chat
-    # viste: chat | terminal | thinking | errors | empty
+    # viste: chat | terminal | system | thinking | errors | empty
 """
 import sys
 from pathlib import Path
@@ -41,6 +41,7 @@ class StubBackend(QObject):
     errorOccurred      = pyqtSignal('QVariant')
     uploadFinished     = pyqtSignal('QVariant')
     terminalEvent      = pyqtSignal('QVariant')
+    systemStatus       = pyqtSignal('QVariant')
 
     @pyqtSlot(str, result=str)
     def uiSetting(self, key):
@@ -52,6 +53,27 @@ class StubBackend(QObject):
     def saveUiSetting(self, k, v): pass
     @pyqtSlot()
     def pickFiles(self): pass
+    @pyqtSlot(float)
+    def setTtsSpeed(self, v): pass
+    @pyqtSlot()
+    def requestSystemStatus(self):
+        self.systemStatus.emit({
+            "type": "_system",
+            "gpus": [
+                {"name": "NVIDIA GeForce RTX 5080", "used": 9963, "total": 16303, "util": 34},
+                {"name": "NVIDIA GeForce RTX 3060 Ti", "used": 2143, "total": 8192, "util": 8},
+            ],
+            "ollama": {"ok": True, "version": "0.31.1", "models": [
+                {"name": "igorls/gemma-4-12B-it-qat-q4_0-unquantized-heretic:latest", "vram_mb": 8300},
+                {"name": "nomic-embed-text:latest", "vram_mb": 320},
+            ]},
+            "tts": {"ok": True, "model": "Qwen3-TTS-0.6B", "profile": "mercoledì"},
+            "web_ok": True,
+            "wake": {"enabled": True, "model": "hey_jarvis"},
+            "stats": {"turns": 12, "words_in": 184, "words_out": 1520,
+                      "stt_errors": 0, "tts_errors": 1},
+            "tts_speed": 1.0,
+        })
     @pyqtSlot(str)
     def sendText(self, t): pass
     @pyqtSlot(str)
@@ -143,6 +165,9 @@ def main() -> int:
                              "rationale": "Elenca i processi ordinati per memoria decrescente.",
                              "risk_level": "low", "needs_confirmation": True,
                              "cwd": "/home/mauro", "search_used": False, "sources": []}})
+        elif MODE == "system":
+            # la pagina è UI-locale: il handler onModeChanged setta page=m
+            backend.modeChanged.emit("system")
         elif MODE == "thinking":
             backend.userMessage.emit("E per la seconda leva?")
             backend.stateChanged.emit("thinking")
