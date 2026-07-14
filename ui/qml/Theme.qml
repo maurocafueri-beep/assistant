@@ -1,6 +1,12 @@
-// ui/qml/Theme.qml — singleton del tema (chiaro pastello / scuro).
-// Ogni colore ha un Behavior: al toggle l'intera UI sfuma con un
-// cross-fade di ~280ms invece di scattare.
+// ui/qml/Theme.qml — singleton del tema su filosofia Material You (MD3):
+// superfici TONALI (la gerarchia nasce dal tono, non dai bordi), colore
+// primario indigo con container, elevazioni delegate alle ombre, motion
+// con easing "emphasized". Ogni colore ha un Behavior: il toggle
+// chiaro/scuro sfuma in ~280ms.
+//
+// I nomi delle property restano quelli storici della UI (card, cardStrong,
+// accentSoft, …) mappati sui token MD3, così tutte le pagine ereditano il
+// nuovo linguaggio senza modifiche.
 
 pragma Singleton
 import QtQuick
@@ -9,44 +15,51 @@ Item {
     id: t
     property bool dark: false
 
-    readonly property int radius:   26
-    readonly property int radiusIn: 18
+    // shape MD3
+    readonly property int radius:   24    // superfici grandi
+    readonly property int radiusIn: 16    // card interne / elementi
 
-    property color text:    dark ? "#e8ecf4" : "#2b3040"
-    property color textDim: dark ? "#98a2b8" : "#8b93a7"
-    property color accent:  dark ? "#5b96ff" : "#3d7ef7"
-    property color danger:  dark ? "#ff6b6b" : "#e5484d"
-    property color warn:    dark ? "#ffd43b" : "#d9a300"
-    property color okCol:   dark ? "#51cf66" : "#2f9e44"
+    // motion MD3 — curva "emphasized decelerate"
+    readonly property var emphasized: [0.05, 0.7, 0.1, 1.0, 1.0, 1.0]
+    readonly property int durShort: 200
+    readonly property int durMed:   350
 
-    // sfondo (gradiente + aloni)
-    property color bg0:   dark ? "#151823" : "#faf8fd"
-    property color bg1:   dark ? "#101219" : "#f3edf9"
-    property color bg2:   dark ? "#171523" : "#f9eef3"
-    property color blob1: dark ? "#2c3766" : "#dcd2f5"
-    property color blob2: dark ? "#4a2e57" : "#f7d9e4"
+    // ── ruoli colore ────────────────────────────────────────────────
+    property color text:    dark ? "#E4E1E9" : "#1B1B21"   // onSurface
+    property color textDim: dark ? "#A5A3B0" : "#46464F"   // onSurfaceVariant
+    property color accent:  dark ? "#6674E8" : "#4C5BD4"   // primary (bianco sopra ok)
+    property color danger:  dark ? "#FF8A80" : "#BA1A1A"
+    property color warn:    dark ? "#FFD54F" : "#8F6D00"
+    property color okCol:   dark ? "#7BD88A" : "#2E7D32"
 
-    // card di vetro
-    property color card:       dark ? Qt.rgba(0.11, 0.125, 0.175, 0.66) : Qt.rgba(1, 1, 1, 0.62)
-    property color cardSoft:   dark ? Qt.rgba(0.11, 0.125, 0.175, 0.45) : Qt.rgba(1, 1, 1, 0.45)
-    property color cardHover:  dark ? Qt.rgba(0.16, 0.18, 0.25, 0.85)   : Qt.rgba(1, 1, 1, 0.85)
-    property color cardStrong: dark ? Qt.rgba(0.18, 0.20, 0.28, 0.97)   : Qt.rgba(1, 1, 1, 0.95)
-    property color cardLine:   dark ? Qt.rgba(1, 1, 1, 0.09)            : Qt.rgba(1, 1, 1, 0.90)
-    property color shadowCol:  dark ? "#000000" : "#3a3550"
+    // sfondo piatto (surface) — bg0..2 identici: MD3 non usa gradienti
+    property color bg0:   dark ? "#131318" : "#FBF8FF"
+    property color bg1:   dark ? "#131318" : "#FBF8FF"
+    property color bg2:   dark ? "#131318" : "#FBF8FF"
+    property color blob1: dark ? "#131318" : "#FBF8FF"   // legacy, non usati
+    property color blob2: dark ? "#131318" : "#FBF8FF"
 
-    // bolle
-    property color mintFill:   dark ? Qt.rgba(0.14, 0.24, 0.17, 0.80) : Qt.rgba(0.914, 0.965, 0.925, 0.92)
-    property color mintLine:   dark ? Qt.rgba(0.35, 0.62, 0.42, 0.45) : Qt.rgba(0.55, 0.78, 0.60, 0.35)
-    property color userFill:   dark ? Qt.rgba(0.17, 0.22, 0.34, 0.85) : Qt.rgba(1, 1, 1, 0.92)
-    property color userLine:   dark ? Qt.rgba(0.36, 0.55, 0.95, 0.35) : Qt.rgba(1, 1, 1, 0.90)
+    // superfici tonali (surfaceContainer*)
+    property color card:       dark ? "#1E1E25" : "#F2EFF7"   // container-low
+    property color cardSoft:   dark ? "#1A1A21" : "#F7F4FB"   // container-lowest
+    property color cardHover:  dark ? "#27272F" : "#EAE7F0"   // container-high
+    property color cardStrong: dark ? "#2B2B33" : "#FFFFFF"   // container / bright
+    property color cardLine:   dark ? Qt.rgba(1,1,1,0.06) : Qt.rgba(0,0,0,0.05) // outlineVariant tenue
+    property color shadowCol:  "#000000"
 
-    // input / codice / accenti tenui
-    property color inputFill:  dark ? Qt.rgba(0, 0, 0, 0.30)  : Qt.rgba(1, 1, 1, 0.90)
-    property color codeBg:     dark ? Qt.rgba(0, 0, 0, 0.35)  : "#eef1f7"
-    property color codeText:   dark ? "#7fb4ff" : "#1d4ed8"
-    property color accentSoft: dark ? Qt.rgba(0.36, 0.55, 0.95, 0.16) : Qt.rgba(0.24, 0.49, 0.97, 0.10)
-    property color accentLine: dark ? Qt.rgba(0.36, 0.55, 0.95, 0.40) : Qt.rgba(0.24, 0.49, 0.97, 0.30)
-    property color scrollBar:  dark ? Qt.rgba(1, 1, 1, 0.15)  : Qt.rgba(0, 0, 0, 0.12)
+    // bolle e accenti di contenuto
+    property color userFill:   dark ? "#2E3357" : "#DFE0FF"   // primaryContainer
+    property color userLine:   "transparent"
+    property color mintFill:   dark ? "#22372A" : "#DFF2E1"   // tertiaryContainer (verde)
+    property color mintLine:   "transparent"
+
+    // input / codice / stati
+    property color inputFill:  dark ? "#23232B" : "#ECE9F3"   // container-high (search bar)
+    property color codeBg:     dark ? "#0E1016" : "#1B1F27"   // il codice resta scuro
+    property color codeText:   dark ? "#A9C7FF" : "#DCE3EE"
+    property color accentSoft: dark ? "#2E3163" : "#DFE0FF"   // primaryContainer
+    property color accentLine: dark ? Qt.rgba(0.55, 0.62, 1, 0.45) : Qt.rgba(0.30, 0.36, 0.83, 0.40)
+    property color scrollBar:  dark ? Qt.rgba(1,1,1,0.16) : Qt.rgba(0,0,0,0.14)
 
     Behavior on text       { ColorAnimation { duration: 280 } }
     Behavior on textDim    { ColorAnimation { duration: 280 } }
@@ -54,22 +67,17 @@ Item {
     Behavior on bg0        { ColorAnimation { duration: 280 } }
     Behavior on bg1        { ColorAnimation { duration: 280 } }
     Behavior on bg2        { ColorAnimation { duration: 280 } }
-    Behavior on blob1      { ColorAnimation { duration: 280 } }
-    Behavior on blob2      { ColorAnimation { duration: 280 } }
     Behavior on card       { ColorAnimation { duration: 280 } }
     Behavior on cardSoft   { ColorAnimation { duration: 280 } }
     Behavior on cardHover  { ColorAnimation { duration: 280 } }
     Behavior on cardStrong { ColorAnimation { duration: 280 } }
     Behavior on cardLine   { ColorAnimation { duration: 280 } }
-    Behavior on mintFill   { ColorAnimation { duration: 280 } }
-    Behavior on mintLine   { ColorAnimation { duration: 280 } }
     Behavior on userFill   { ColorAnimation { duration: 280 } }
-    Behavior on userLine   { ColorAnimation { duration: 280 } }
+    Behavior on mintFill   { ColorAnimation { duration: 280 } }
     Behavior on inputFill  { ColorAnimation { duration: 280 } }
     Behavior on codeBg     { ColorAnimation { duration: 280 } }
     Behavior on codeText   { ColorAnimation { duration: 280 } }
     Behavior on accentSoft { ColorAnimation { duration: 280 } }
     Behavior on accentLine { ColorAnimation { duration: 280 } }
     Behavior on scrollBar  { ColorAnimation { duration: 280 } }
-    Behavior on shadowCol  { ColorAnimation { duration: 280 } }
 }

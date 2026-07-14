@@ -1,6 +1,7 @@
-// ui/qml/Glass.qml — card "frosted glass" su tema CHIARO (stile reference:
-// pastelli soffici, card bianche traslucide, ombre leggere e diffuse).
-// I contenuti vanno nel default property (children).
+// ui/qml/Glass.qml — superficie tonale in filosofia Material (MD3).
+// Il nome resta "Glass" per compatibilità con le pagine, ma il linguaggio è
+// cambiato: niente trasparenze né bordi speculari — la gerarchia nasce dal
+// TONO della superficie e dall'ELEVAZIONE (ombra morbida).
 
 import QtQuick
 import QtQuick.Effects
@@ -11,18 +12,18 @@ Item {
     default property alias content: inner.data
     property real  glassRadius: Theme.radius
     property color fill: Theme.card
-    property color line: Theme.cardLine
+    property color line: "transparent"      // MD3: superfici senza bordo
     property bool  shadow: true
-    property real  shadowStrength: 0.10
+    property real  shadowStrength: 0.14     // elevazione 1-2
 
     MultiEffect {
         visible: glass.shadow
         source: panel
         anchors.fill: panel
         shadowEnabled: true
-        shadowBlur: 1.0
+        shadowBlur: 0.7
         shadowOpacity: glass.shadowStrength
-        shadowVerticalOffset: 8
+        shadowVerticalOffset: 3
         shadowColor: Theme.shadowCol
     }
 
@@ -31,19 +32,8 @@ Item {
         anchors.fill: parent
         radius: glass.glassRadius
         color: glass.fill
-        border.width: 1
+        border.width: glass.line.a > 0 ? 1 : 0
         border.color: glass.line
-
-        // sheen delicato dall'alto (vetro satinato)
-        Rectangle {
-            anchors.fill: parent
-            radius: parent.radius
-            gradient: Gradient {
-                GradientStop { position: 0.0; color: Theme.dark ? Qt.rgba(1,1,1,0.05) : Qt.rgba(1,1,1,0.35) }
-                GradientStop { position: 0.5; color: Theme.dark ? Qt.rgba(1,1,1,0.01) : Qt.rgba(1,1,1,0.05) }
-                GradientStop { position: 1.0; color: "transparent" }
-            }
-        }
 
         Item {
             id: inner

@@ -152,7 +152,7 @@ def main() -> int:
             "voices": ["mercoledì", "cloe"],
             "active_messages": [] if MODE == "empty" else [
                 {"role": "user", "text": "Come posso rendere più veloce il TTS?"},
-                {"role": "assistant", "text": "Tre leve principali:\n\n1. **Modello più piccolo** (0.6B): genera 3× più veloce\n2. **GPU dedicata**: isola la sintesi dal traffico LLM\n3. *Time-stretch* WSOLA per il parlato accelerato"},
+                {"role": "assistant", "text": "## Tre leve principali\n\n1. **Modello più piccolo** (0.6B): genera 3× più veloce\n2. **GPU dedicata**: isola la sintesi dal traffico LLM\n3. *Time-stretch* WSOLA per il parlato\n\nEcco come misurare la latenza con `curl`:\n\n```bash\ntime curl -s http://127.0.0.1:8765/synthesize \\\n  -d '{\"text\": \"Prova di sintesi\", \"speed\": 1.0}' -o out.wav\n```\n\nSotto **RTF 1.0** il parlato è continuo, senza pause."},
                 {"role": "user", "text": "Perfetto, procediamo con la prima."},
             ],
         })
