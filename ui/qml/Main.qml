@@ -212,7 +212,7 @@ ApplicationWindow {
     Rectangle {
         anchors.fill: parent
         color: Theme.bg0
-        opacity: 0.98
+        opacity: 0.86
     }
 
     // ── layout ──────────────────────────────────────────────────────
@@ -343,7 +343,7 @@ ApplicationWindow {
             Layout.fillHeight: true
             Layout.preferredWidth: appState.page === "chat" ? 264 : 0
             glassRadius: Theme.radius
-            fill: Theme.cardSoft
+            fill: Theme.panelGlass
             clip: true
             visible: Layout.preferredWidth > 0
             Behavior on Layout.preferredWidth {
@@ -481,125 +481,15 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.fillHeight: true
             glassRadius: Theme.radius
-            fill: Theme.cardSoft
+            fill: Theme.panelGlass
             clip: true
 
-            ColumnLayout {
+            Item {
                 anchors.fill: parent
-                spacing: 0
 
-                // ── header contestuale ──────────────────────────────
-                RowLayout {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 62
-                    Layout.leftMargin: 24
-                    Layout.rightMargin: 20
-                    spacing: 12
-
-                    ColumnLayout {
-                        spacing: 1
-                        Text {
-                            text: appState.page === "terminal" ? "Terminale"
-                                : appState.page === "system"   ? "Sistema"
-                                : appState.sessionName
-                            color: Theme.text
-                            font.pixelSize: 19
-                            font.bold: true
-                            elide: Text.ElideRight
-                            Layout.maximumWidth: 380
-                        }
-                        Row {
-                            spacing: 6
-                            Rectangle {
-                                width: 7; height: 7; radius: 3.5
-                                anchors.verticalCenter: parent.verticalCenter
-                                color: appState.voiceState === "idle"
-                                       || appState.voiceState === "listening"
-                                       ? Theme.okCol : Theme.accent
-                                SequentialAnimation on opacity {
-                                    running: appState.voiceState !== "idle"
-                                    loops: Animation.Infinite
-                                    NumberAnimation { to: 0.4; duration: 700 }
-                                    NumberAnimation { to: 1.0; duration: 700 }
-                                }
-                            }
-                            Text {
-                                text: appState.stateLabel
-                                color: Theme.textDim
-                                font.pixelSize: 11
-                            }
-                        }
-                    }
-
-                    Item { Layout.fillWidth: true }
-
-                    Rectangle {
-                        visible: appState.latency.total_ms !== undefined
-                        width: latText.width + 18; height: 26; radius: 13
-                        color: Theme.card
-                        Text {
-                            id: latText
-                            anchors.centerIn: parent
-                            text: "⏱ " + (appState.latency.total_ms / 1000).toFixed(1) + "s"
-                            color: Theme.textDim
-                            font.pixelSize: 11
-                        }
-                        MouseArea { id: latArea; anchors.fill: parent; hoverEnabled: true }
-                        ToolTip.visible: latArea.containsMouse
-                        ToolTip.text: "stt " + Math.round(appState.latency.stt_ms || 0)
-                                      + "ms · llm " + Math.round(appState.latency.llm_ms || 0)
-                                      + "ms · tts " + Math.round(appState.latency.tts_ms || 0) + "ms"
-                    }
-
-                    AbstractButton {
-                        id: setupBtn
-                        implicitWidth: setupRow.implicitWidth + 26
-                        implicitHeight: 34
-                        onPressed: setupRip.trigger(pressX, pressY)
-                        onClicked: setupPopup.open()
-                        background: Rectangle {
-                            radius: 17
-                            color: setupBtn.hovered || setupPopup.visible
-                                   ? Theme.cardHover : Theme.card
-                            Behavior on color { ColorAnimation { duration: 140 } }
-                            Ripple { id: setupRip }
-                        }
-                        contentItem: Row {
-                            id: setupRow
-                            spacing: 7
-                            leftPadding: 13
-                            Text {
-                                text: "⚙"
-                                color: Theme.textDim
-                                font.pixelSize: 13
-                                anchors.verticalCenter: parent.verticalCenter
-                            }
-                            Text {
-                                text: appState.page === "terminal"
-                                      ? (appState.terminalModel || "modello")
-                                      : appState.model.split("/").pop().split(":")[0] || "modello"
-                                color: Theme.text
-                                font.pixelSize: 12
-                                anchors.verticalCenter: parent.verticalCenter
-                            }
-                        }
-                        ToolTip.visible: hovered && !setupPopup.visible
-                        ToolTip.text: "Modello, profilo e voce"
-                    }
-                }
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.leftMargin: 20
-                    Layout.rightMargin: 20
-                    height: 1
-                    color: Theme.cardLine
-                }
-
-                // ── pagine con transizione slide+fade ───────────────
+                // ── pagine (scorrono SOTTO l'header frosted) ────────
                 Item {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
+                    anchors.fill: parent
 
                     StackLayout {
                         id: pages
@@ -613,7 +503,7 @@ ApplicationWindow {
 
                             ColumnLayout {
                                 Layout.fillWidth: true
-                                Layout.topMargin: 60
+                                Layout.topMargin: 124
                                 spacing: 24
                                 visible: chatModel.count === 0 && appState.voiceState !== "loading"
 
@@ -645,6 +535,8 @@ ApplicationWindow {
                                         property string label: ""
                                         implicitWidth: chipRow.implicitWidth + 30
                                         implicitHeight: 46
+                                        scale: pressed ? 0.96 : (hovered ? 1.05 : 1.0)
+                                        Behavior on scale { SpringAnimation { spring: 3.6; damping: 0.26 } }
                                         onPressed: chipRip.trigger(pressX, pressY)
                                         background: Rectangle {
                                             radius: 23
@@ -705,7 +597,7 @@ ApplicationWindow {
                                 model: chatModel
                                 spacing: 18
                                 clip: true
-                                topMargin: 20; bottomMargin: 20; leftMargin: 26; rightMargin: 26
+                                topMargin: 84; bottomMargin: 20; leftMargin: 26; rightMargin: 26
                                 boundsBehavior: Flickable.StopAtBounds
 
                                 add: Transition {
@@ -715,6 +607,23 @@ ApplicationWindow {
                                         duration: Theme.durMed
                                         easing.type: Easing.BezierSpline
                                         easing.bezierCurve: Theme.emphasized
+                                    }
+                                }
+                                populate: Transition {
+                                    id: popTrans
+                                    SequentialAnimation {
+                                        PauseAnimation {
+                                            duration: Math.min(popTrans.ViewTransition.index * 45, 360)
+                                        }
+                                        ParallelAnimation {
+                                            NumberAnimation { property: "opacity"; from: 0; to: 1
+                                                              duration: 260 }
+                                            NumberAnimation { property: "y"
+                                                              from: popTrans.ViewTransition.destination.y + 24
+                                                              duration: 320
+                                                              easing.type: Easing.BezierSpline
+                                                              easing.bezierCurve: Theme.emphasized }
+                                        }
                                     }
                                 }
                                 displaced: Transition {
@@ -756,9 +665,24 @@ ApplicationWindow {
                                                 anchors.right: parent.right
                                                 width: Math.min(uText.implicitWidth + 34,
                                                                 parent.width * 0.72)
-                                                height: uText.implicitHeight + 24
-                                                radius: 20
-                                                color: Theme.userFill
+                                                height: uText.implicitHeight + 26
+                                                topLeftRadius: 18
+                                                topRightRadius: 18
+                                                bottomLeftRadius: 18
+                                                bottomRightRadius: 6
+                                                border.width: 1
+                                                border.color: Theme.accentLine
+                                                gradient: Gradient {
+                                                    GradientStop {
+                                                        position: 0.0
+                                                        color: Qt.lighter(Theme.userFill,
+                                                                          Theme.dark ? 1.12 : 1.03)
+                                                    }
+                                                    GradientStop {
+                                                        position: 1.0
+                                                        color: Theme.userFill
+                                                    }
+                                                }
                                                 TextEdit {
                                                     id: uText
                                                     anchors.fill: parent
@@ -847,12 +771,27 @@ ApplicationWindow {
                                 }
                             }
 
-                            Flow {
+                            Item {
                                 Layout.fillWidth: true
                                 Layout.leftMargin: 24
                                 Layout.rightMargin: 24
+                                Layout.preferredHeight: appState.attachments.length > 0
+                                                        ? attFlow.implicitHeight + 4 : 0
+                                clip: true
+                                Behavior on Layout.preferredHeight {
+                                    NumberAnimation {
+                                        duration: Theme.durShort
+                                        easing.type: Easing.BezierSpline
+                                        easing.bezierCurve: Theme.emphasized
+                                    }
+                                }
+
+                                Flow {
+                                id: attFlow
+                                width: parent.width
                                 spacing: 6
-                                visible: appState.attachments.length > 0
+                                opacity: appState.attachments.length > 0 ? 1 : 0
+                                Behavior on opacity { NumberAnimation { duration: 180 } }
 
                                 Repeater {
                                     model: appState.attachments
@@ -883,6 +822,7 @@ ApplicationWindow {
                                             }
                                         }
                                     }
+                                }
                                 }
                             }
 
@@ -998,15 +938,27 @@ ApplicationWindow {
                         }
 
                         // ── pagina terminale ────────────────────────
-                        TerminalPage {
-                            id: terminalPage
-                            feed: terminalFeed
+                        ColumnLayout {
+                            spacing: 0
+                            Item { Layout.preferredHeight: 64 }
+                            TerminalPage {
+                                id: terminalPage
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                feed: terminalFeed
+                            }
                         }
 
                         // ── pagina sistema ──────────────────────────
-                        SystemPage {
-                            id: systemPage
-                            latencyHistory: latencyHistory
+                        ColumnLayout {
+                            spacing: 0
+                            Item { Layout.preferredHeight: 64 }
+                            SystemPage {
+                                id: systemPage
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                latencyHistory: latencyHistory
+                            }
                         }
                     }
 
@@ -1027,9 +979,175 @@ ApplicationWindow {
                             easing.bezierCurve: Theme.emphasized
                         }
                     }
+
+                // ── header frosted (macOS): sfoca ciò che scorre sotto ──
+                Item {
+                    id: headerZone
+                    anchors.top: parent.top
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    height: 64
+
+                    // NB: niente maschera arrotondata sul frost — MultiEffect
+                    // maskSource non dipinge in questo scenario (testato: layer
+                    // e ShaderEffectSource producono texture vuota) e il velo è
+                    // così vicino al tono del pannello che gli angoli quadrati
+                    // sono invisibili.
+                    Item {
+                        anchors.fill: parent
+
+                        // campione live del contenuto sottostante, sfocato
+                        ShaderEffectSource {
+                            id: headerSample
+                            anchors.fill: parent
+                            anchors.leftMargin: Theme.radius
+                            anchors.rightMargin: Theme.radius
+                            sourceItem: pages
+                            sourceRect: Qt.rect(Theme.radius, 0,
+                                                headerZone.width - Theme.radius * 2,
+                                                headerZone.height)
+                            live: true
+                            visible: false
+                        }
+                        MultiEffect {
+                            anchors.fill: parent
+                            // il blur è rettangolare: lo si tiene DENTRO la
+                            // curva degli angoli del pannello
+                            anchors.leftMargin: Theme.radius
+                            anchors.rightMargin: Theme.radius
+                            source: headerSample
+                            blurEnabled: true
+                            blur: 1.0
+                            blurMax: 32
+                        }
+                        // velo di vetro con i soli angoli superiori arrotondati
+                        Rectangle {
+                            anchors.fill: parent
+                            color: Theme.headerTint
+                            topLeftRadius: Theme.radius
+                            topRightRadius: Theme.radius
+                            bottomLeftRadius: 0
+                            bottomRightRadius: 0
+                        }
+                    }
+
+                    // hairline: appare quando il contenuto scorre sotto
+                    Rectangle {
+                        anchors.bottom: parent.bottom
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.leftMargin: 18
+                        anchors.rightMargin: 18
+                        height: 1
+                        color: Theme.cardLine
+                        opacity: appState.page !== "chat"
+                                 || chatList.contentY > (-chatList.topMargin + 4) ? 1 : 0
+                        Behavior on opacity { NumberAnimation { duration: 180 } }
+                    }
+
+                    // contenuto dell'header
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 24
+                        anchors.rightMargin: 20
+                        spacing: 12
+
+                        ColumnLayout {
+                            spacing: 1
+                            Text {
+                                text: appState.page === "terminal" ? "Terminale"
+                                    : appState.page === "system"   ? "Sistema"
+                                    : appState.sessionName
+                                color: Theme.text
+                                font.pixelSize: 19
+                                font.bold: true
+                                elide: Text.ElideRight
+                                Layout.maximumWidth: 380
+                            }
+                            Row {
+                                spacing: 6
+                                Rectangle {
+                                    width: 7; height: 7; radius: 3.5
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    color: appState.voiceState === "idle"
+                                           || appState.voiceState === "listening"
+                                           ? Theme.okCol : Theme.accent
+                                    SequentialAnimation on opacity {
+                                        running: appState.voiceState !== "idle"
+                                        loops: Animation.Infinite
+                                        NumberAnimation { to: 0.4; duration: 700 }
+                                        NumberAnimation { to: 1.0; duration: 700 }
+                                    }
+                                }
+                                Text {
+                                    text: appState.stateLabel
+                                    color: Theme.textDim
+                                    font.pixelSize: 11
+                                }
+                            }
+                        }
+
+                        Item { Layout.fillWidth: true }
+
+                        Rectangle {
+                            visible: appState.latency.total_ms !== undefined
+                            width: latText.width + 18; height: 26; radius: 13
+                            color: Theme.card
+                            Text {
+                                id: latText
+                                anchors.centerIn: parent
+                                text: "⏱ " + (appState.latency.total_ms / 1000).toFixed(1) + "s"
+                                color: Theme.textDim
+                                font.pixelSize: 11
+                            }
+                            MouseArea { id: latArea; anchors.fill: parent; hoverEnabled: true }
+                            ToolTip.visible: latArea.containsMouse
+                            ToolTip.text: "stt " + Math.round(appState.latency.stt_ms || 0)
+                                          + "ms · llm " + Math.round(appState.latency.llm_ms || 0)
+                                          + "ms · tts " + Math.round(appState.latency.tts_ms || 0) + "ms"
+                        }
+
+                        AbstractButton {
+                            id: setupBtn
+                            implicitWidth: setupRow.implicitWidth + 26
+                            implicitHeight: 34
+                            onPressed: setupRip.trigger(pressX, pressY)
+                            onClicked: setupPopup.open()
+                            background: Rectangle {
+                                radius: 17
+                                color: setupBtn.hovered || setupPopup.visible
+                                       ? Theme.cardHover : Theme.card
+                                Behavior on color { ColorAnimation { duration: 140 } }
+                                Ripple { id: setupRip }
+                            }
+                            contentItem: Row {
+                                id: setupRow
+                                spacing: 7
+                                leftPadding: 13
+                                Text {
+                                    text: "⚙"
+                                    color: Theme.textDim
+                                    font.pixelSize: 13
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                                Text {
+                                    text: appState.page === "terminal"
+                                          ? (appState.terminalModel || "modello")
+                                          : appState.model.split("/").pop().split(":")[0] || "modello"
+                                    color: Theme.text
+                                    font.pixelSize: 12
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                            }
+                            ToolTip.visible: hovered && !setupPopup.visible
+                            ToolTip.text: "Modello, profilo e voce"
+                        }
+                    }
                 }
             }
         }
+    }
+
     }
 
     // ── popover impostazioni (modello / profilo / voce) ─────────────

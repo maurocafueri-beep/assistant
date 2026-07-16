@@ -61,6 +61,11 @@ Item {
     property color accentLine: dark ? Qt.rgba(0.55, 0.62, 1, 0.45) : Qt.rgba(0.30, 0.36, 0.83, 0.40)
     property color scrollBar:  dark ? Qt.rgba(1,1,1,0.16) : Qt.rgba(0,0,0,0.14)
 
+    // vetro (traslucenza in stile macOS: il desktop filtra attraverso)
+    property color panelGlass: dark ? Qt.rgba(0.094, 0.10, 0.129, 0.62) : Qt.rgba(1, 1, 1, 0.60)
+    property color headerTint: dark ? Qt.rgba(0.075, 0.078, 0.10, 0.55) : Qt.rgba(0.99, 0.98, 1, 0.55)
+    property color specular:   dark ? Qt.rgba(1, 1, 1, 0.07)            : Qt.rgba(1, 1, 1, 0.75)
+
     Behavior on text       { ColorAnimation { duration: 280 } }
     Behavior on textDim    { ColorAnimation { duration: 280 } }
     Behavior on accent     { ColorAnimation { duration: 280 } }
@@ -80,4 +85,7 @@ Item {
     Behavior on accentSoft { ColorAnimation { duration: 280 } }
     Behavior on accentLine { ColorAnimation { duration: 280 } }
     Behavior on scrollBar  { ColorAnimation { duration: 280 } }
+    Behavior on panelGlass { ColorAnimation { duration: 280 } }
+    Behavior on headerTint { ColorAnimation { duration: 280 } }
+    Behavior on specular   { ColorAnimation { duration: 280 } }
 }

@@ -6,6 +6,7 @@
 //        speaking (barre audio animate)
 
 import QtQuick
+import QtQuick.Effects
 
 Item {
     id: orb
@@ -27,6 +28,35 @@ Item {
       : voiceState === "speaking"  ? cSpeak
       : (voiceState === "loading" || voiceState === "warmup") ? cLoad
       : cIdle
+
+    // ── alone "aurora" (respira quando l'assistente è attivo) ───────
+    Rectangle {
+        id: halo
+        anchors.centerIn: parent
+        width: parent.width * 1.9
+        height: width
+        radius: width / 2
+        color: orb.stateColor
+        opacity: 0
+        layer.enabled: true
+        layer.effect: MultiEffect { blurEnabled: true; blur: 1.0; blurMax: 28 }
+        readonly property bool active: orb.voiceState === "recording"
+                                       || orb.voiceState === "speaking"
+                                       || orb.voiceState === "thinking"
+        onActiveChanged: if (!active) opacity = 0
+        SequentialAnimation on opacity {
+            running: halo.active
+            loops: Animation.Infinite
+            NumberAnimation { to: 0.34; duration: 900; easing.type: Easing.InOutSine }
+            NumberAnimation { to: 0.12; duration: 900; easing.type: Easing.InOutSine }
+        }
+        SequentialAnimation on scale {
+            running: halo.active
+            loops: Animation.Infinite
+            NumberAnimation { to: 1.18; duration: 1400; easing.type: Easing.InOutSine }
+            NumberAnimation { to: 0.94; duration: 1400; easing.type: Easing.InOutSine }
+        }
+    }
 
     // ── disco di base ───────────────────────────────────────────────
     Rectangle {

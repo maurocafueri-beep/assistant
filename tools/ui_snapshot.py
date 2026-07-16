@@ -7,7 +7,7 @@ stack (niente orchestratore/STT/TTS) e senza display.
 
 Uso:
     QT_QPA_PLATFORM=offscreen venv-runtime/bin/python tools/ui_snapshot.py out chat
-    # viste: chat | terminal | system | thinking | errors | empty
+    # viste: chat | terminal | system | scroll | thinking | errors | empty
 """
 import sys
 from pathlib import Path
@@ -165,6 +165,15 @@ def main() -> int:
                              "rationale": "Elenca i processi ordinati per memoria decrescente.",
                              "risk_level": "low", "needs_confirmation": True,
                              "cwd": "/home/mauro", "search_used": False, "sources": []}})
+        elif MODE == "scroll":
+            for i in range(5):
+                backend.userMessage.emit(f"Domanda numero {i+1}: come ottimizzo il modulo?")
+                backend.chunkReceived.emit(
+                    f"**Risposta {i+1}** — Ecco alcuni punti utili sull'ottimizzazione: "
+                    "riduci il lavoro nel percorso caldo, misura prima di cambiare, "
+                    "e tieni la cache vicina ai dati. `perf` aiuta a trovare i colli.")
+                backend.statsChanged.emit({"latency": {"llm_ms": 1000 + i * 300,
+                                                       "total_ms": 1400 + i * 300}})
         elif MODE == "system":
             # la pagina è UI-locale: il handler onModeChanged setta page=m
             backend.modeChanged.emit("system")
