@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import QUrl
+from PyQt6.QtCore import QEvent, QObject, Qt, QUrl
 from PyQt6.QtGui import QIcon
 from PyQt6.QtQml import QQmlApplicationEngine
 # QApplication (widgets) e non QGuiApplication: serve al QFileDialog di
@@ -28,7 +28,41 @@ _QML_DIR = Path(__file__).parent / "qml"
 _ASSETS  = Path(__file__).parent / "assets"
 
 
-def run(personality: Optional[str] = None, ptt_key: str = "space") -> int:
+class HoldToTalkFilter(QObject):
+    """Push-to-talk da tastiera: Alt premuto = registra, rilasciato = invia.
+
+    Event filter a livello di applicazione (non QML): funziona qualunque
+    item abbia il focus, campo di testo incluso. Wayland non permette
+    hotkey globali senza portal, quindi vale con la finestra attiva —
+    che è anche l'unico momento in cui ha senso dettare.
+    """
+
+    def __init__(self, backend: Backend) -> None:
+        super().__init__()
+        self._backend = backend
+        self._held = False
+
+    def eventFilter(self, obj: QObject, ev: QEvent) -> bool:
+        t = ev.type()
+        if t == QEvent.Type.KeyPress and ev.key() == Qt.Key.Key_Alt:
+            if not ev.isAutoRepeat() and not self._held:
+                self._held = True
+                self._backend.pttDown()
+            return True
+        if t == QEvent.Type.KeyRelease and ev.key() == Qt.Key.Key_Alt:
+            if not ev.isAutoRepeat() and self._held:
+                self._held = False
+                self._backend.pttUp()
+            return True
+        # Alt+Tab e simili: la finestra perde il focus e il KeyRelease non
+        # arriva mai — chiudiamo la registrazione per non lasciarla appesa.
+        if t == QEvent.Type.ApplicationDeactivate and self._held:
+            self._held = False
+            self._backend.pttUp()
+        return False
+
+
+def run(personality: Optional[str] = None, ptt_key: str = "alt") -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Local Assistant")
     app.setDesktopFileName("local-assistant")
@@ -37,6 +71,9 @@ def run(personality: Optional[str] = None, ptt_key: str = "space") -> int:
         app.setWindowIcon(QIcon(str(icon)))
 
     backend = Backend()
+
+    ptt_filter = HoldToTalkFilter(backend)
+    app.installEventFilter(ptt_filter)
 
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty("backend", backend)

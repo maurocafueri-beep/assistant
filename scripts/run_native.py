@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 def main() -> None:
     p = argparse.ArgumentParser(description="local-assistant — UI nativa Qt Quick")
     p.add_argument("--personality", default=None,    help="Profilo personalità")
-    p.add_argument("--ptt-key",     default="space", help="Tasto PTT (space, f4, …)")
+    p.add_argument("--ptt-key",     default="alt",   help="Tasto PTT (nella UI nativa è Alt)")
     args = p.parse_args()
 
     # Impostazioni UI salvate: la CLI ha priorità (stessa logica di run_app).
@@ -36,7 +36,7 @@ def main() -> None:
             pass
 
     personality = args.personality or cfg.get("personality")
-    ptt_key = args.ptt_key if args.ptt_key != "space" else cfg.get("ptt_key", "space")
+    ptt_key = args.ptt_key if args.ptt_key != "alt" else cfg.get("ptt_key", "alt")
 
     from ui.native_app import run
     sys.exit(run(personality=personality, ptt_key=ptt_key))

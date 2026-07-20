@@ -7,7 +7,7 @@ stack (niente orchestratore/STT/TTS) e senza display.
 
 Uso:
     QT_QPA_PLATFORM=offscreen venv-runtime/bin/python tools/ui_snapshot.py out chat
-    # viste: chat | terminal | system | scroll | thinking | errors | empty
+    # viste: chat | terminal | system | scroll | thinking | dictate | errors | empty
 """
 import sys
 from pathlib import Path
@@ -42,6 +42,7 @@ class StubBackend(QObject):
     uploadFinished     = pyqtSignal('QVariant')
     terminalEvent      = pyqtSignal('QVariant')
     systemStatus       = pyqtSignal('QVariant')
+    sttPartial         = pyqtSignal('QVariant')
 
     @pyqtSlot(str, result=str)
     def uiSetting(self, key):
@@ -180,6 +181,10 @@ def main() -> int:
         elif MODE == "thinking":
             backend.userMessage.emit("E per la seconda leva?")
             backend.stateChanged.emit("thinking")
+        elif MODE == "dictate":
+            backend.stateChanged.emit("recording")
+            backend.sttPartial.emit({"text": "spiegami come funziona il time-stretch",
+                                     "final": False})
         elif MODE == "errors":
             backend.errorOccurred.emit({"source": "turn",
                                         "message": "LLM error: connessione a Ollama rifiutata"})

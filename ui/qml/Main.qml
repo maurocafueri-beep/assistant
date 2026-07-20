@@ -44,6 +44,8 @@ ApplicationWindow {
         property var    attachments: []
         property var    terminalModels: []
         property string terminalModel: ""
+        property bool   dictating: false      // dettato live via Alt (PTT)
+        property string savedDraft: ""        // bozza scritta prima del dettato
 
         readonly property string sessionName: {
             for (var i = 0; i < sessions.length; i++)
@@ -184,6 +186,22 @@ ApplicationWindow {
             }
         }
         function onModelsListed(list)     { appState.models = list }
+        function onSttPartial(p) {
+            // Dettato live (Alt tenuto premuto): i parziali riempiono il campo
+            // di input; al rilascio il bridge invia da sé il testo definitivo,
+            // qui ripristiniamo l'eventuale bozza scritta a mano.
+            if (p.final) {
+                input.text = appState.dictating ? appState.savedDraft : input.text
+                appState.dictating = false
+                appState.savedDraft = ""
+            } else {
+                if (!appState.dictating) {
+                    appState.dictating = true
+                    appState.savedDraft = input.text
+                }
+                input.text = p.text
+            }
+        }
         function onErrorOccurred(p)       { pushError(p.source || "app", p.message || "") }
         function onBackendError(msg)      { pushError("backend", msg) }
         function onUploadFinished(p) {
@@ -848,18 +866,24 @@ ApplicationWindow {
                                         leftPadding: 18
                                         placeholderText: appState.voiceState === "loading"
                                                          ? "Caricamento assistente…"
-                                                         : "Chiedimi qualsiasi cosa…"
+                                                         : appState.voiceState === "recording"
+                                                         ? "Ti ascolto… parla pure"
+                                                         : "Chiedimi qualsiasi cosa… (tieni premuto Alt per dettare)"
                                         placeholderTextColor: Theme.textDim
                                         enabled: appState.voiceState !== "loading"
-                                        color: Theme.text
+                                        color: appState.dictating ? Theme.textDim : Theme.text
+                                        font.italic: appState.dictating
                                         font.pixelSize: 14
                                         font.family: "Noto Sans"
                                         background: Rectangle {
                                             color: input.activeFocus ? Theme.cardHover : Theme.inputFill
                                             radius: 24
-                                            border.width: input.activeFocus ? 2 : 0
-                                            border.color: Theme.accent
+                                            border.width: (input.activeFocus
+                                                           || appState.voiceState === "recording") ? 2 : 0
+                                            border.color: appState.voiceState === "recording"
+                                                          ? Theme.danger : Theme.accent
                                             Behavior on color { ColorAnimation { duration: 140 } }
+                                            Behavior on border.color { ColorAnimation { duration: 140 } }
                                         }
                                         onAccepted: sendCurrentInput()
                                     }

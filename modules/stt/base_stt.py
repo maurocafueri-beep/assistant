@@ -235,8 +235,14 @@ class WhisperSTT:
         beam_size:      int,
         temperature:    float,
     ):
-        """Eseguito in thread."""
-        return self._whisper.transcribe(
+        """Eseguito in thread.
+
+        faster-whisper restituisce un generatore LAZY: l'inferenza avviene
+        iterandolo. Va consumato QUI, nel thread dell'executor — altrimenti
+        _parse_segments la eseguirebbe sull'event loop, congelandolo (e con
+        lui la cattura PTT: il mic va in overflow e perde l'audio).
+        """
+        segments, info = self._whisper.transcribe(
             audio_f32,
             language=self._language or None,
             initial_prompt=initial_prompt,
@@ -245,6 +251,7 @@ class WhisperSTT:
             vad_filter=False,   # gestiamo il VAD esternamente
             word_timestamps=False,
         )
+        return list(segments), info
 
     # -- trascrizione con VAD --------------------------------------------------
 

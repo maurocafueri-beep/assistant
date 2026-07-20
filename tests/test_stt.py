@@ -136,3 +136,39 @@ class TestTranscribeTone:
         async with WhisperSTT() as stt:
             result = await stt.transcribe_with_vad(tone_audio)
         assert len(result.language) >= 2
+
+
+class TestInferenzaNellExecutor:
+    """Regressione: faster-whisper ritorna un generatore lazy — se non viene
+    consumato dentro _transcribe_sync (thread executor), l'inferenza gira
+    sull'event loop e congela la cattura PTT (il mic perde l'audio dopo la
+    prima parola)."""
+
+    def _stt_con_finto_whisper(self, consumed_in: list):
+        import threading
+        from types import SimpleNamespace
+
+        stt = WhisperSTT.__new__(WhisperSTT)
+        stt._language = "it"
+
+        def fake_transcribe(audio, **kw):
+            def gen():
+                consumed_in.append(threading.get_ident())
+                yield SimpleNamespace(start=0.0, end=1.0, text="ciao",
+                                      avg_logprob=-0.1, no_speech_prob=0.0)
+            return gen(), SimpleNamespace(language="it")
+
+        stt._whisper = SimpleNamespace(transcribe=fake_transcribe)
+        return stt
+
+    async def test_generatore_consumato_fuori_dall_event_loop(self):
+        import threading
+        consumed_in: list = []
+        stt = self._stt_con_finto_whisper(consumed_in)
+        result = await stt.transcribe(b"\x00\x00" * SAMPLE_RATE)
+        assert result.text == "ciao"
+        assert consumed_in, "il generatore non è mai stato consumato"
+        assert consumed_in[0] != threading.get_ident(), (
+            "l'inferenza whisper è stata eseguita sull'event loop "
+            "invece che nel thread dell'executor"
+        )

@@ -62,7 +62,7 @@ async def serve_native(
     emitter: QtEmitter,
     *,
     personality: Optional[str] = None,
-    ptt_key: str = "space",
+    ptt_key: str = "alt",
     on_loop_ready=None,
 ) -> None:
     """
@@ -215,6 +215,7 @@ class Backend(QObject):
     uploadFinished     = pyqtSignal('QVariant')   # {ok, path, name} | {ok, error}
     terminalEvent      = pyqtSignal('QVariant')   # payload terminal.* integrale
     systemStatus       = pyqtSignal('QVariant')   # da requestSystemStatus()
+    sttPartial         = pyqtSignal('QVariant')   # {text, final} — dettato live PTT
 
     def __init__(self, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
@@ -226,7 +227,7 @@ class Backend(QObject):
 
     # ── ciclo di vita ────────────────────────────────────────────────
 
-    def start(self, *, personality: Optional[str] = None, ptt_key: str = "space") -> None:
+    def start(self, *, personality: Optional[str] = None, ptt_key: str = "alt") -> None:
         """Avvia il worker asyncio con l'UIBridge. Idempotente."""
         if self._thread is not None:
             return
@@ -290,6 +291,7 @@ class Backend(QObject):
         elif t == "_models":        self.modelsListed.emit(payload.get("models", []))
         elif t == "_upload":        self.uploadFinished.emit(payload)
         elif t == "_system":        self.systemStatus.emit(payload)
+        elif t == "stt_partial":    self.sttPartial.emit(payload)
         elif t == "error":          self.errorOccurred.emit(payload)
         elif t.startswith("terminal."):
             self.terminalEvent.emit(payload)

@@ -12,6 +12,12 @@ from core.voice_loop import (
     _PTT_MIN_DURATION_S, _PTT_SAMPLE_RATE, _PTT_BLOCK_SIZE,
 )
 
+# Trascrizione live durante il PTT: prima passata dopo _FIRST_S di parlato,
+# poi una ogni _EVERY_S (se la precedente è finita), sull'ultima _WINDOW_S.
+_PARTIAL_FIRST_S  = 0.8
+_PARTIAL_EVERY_S  = 1.2
+_PARTIAL_WINDOW_S = 30.0
+
 _SPECIAL_KEYS = {"space","f1","f2","f3","f4","f5","f6","f7","f8","f9","f10","f11","f12",
                  "ctrl_l","ctrl_r","shift_l","shift_r","alt_l","alt_r","caps_lock","tab",
                  "insert","scroll_lock","pause","num_lock"}
@@ -695,13 +701,30 @@ class UIBridge(VoiceLoop):
         # Niente monkey-patching: le latenze sono misurate dal base loop.
         self._emit({"type": "chunk", "text": chunk})
 
+    async def _stt_partial(self, audio: bytes) -> None:
+        """Trascrizione parziale live durante la registrazione PTT.
+
+        Ritrascrive il buffer accumulato (beam ridotto: conta la reattività,
+        il testo definitivo arriva dalla trascrizione finale) ed emette
+        stt_partial alla UI, che lo mostra nel campo di input.
+        """
+        try:
+            r = await self._stt.transcribe(audio, beam_size=1)
+            if not r.is_empty():
+                self._emit({"type": "stt_partial", "text": r.text, "final": False})
+        except Exception as e:
+            logger.debug("ui.bridge | STT parziale: {}", e)
+
     async def _run_ptt(self) -> None:
         import numpy as np, sounddevice as sd
         # Niente listener globale pynput (backend X11/Xlib → muto su Wayland):
-        # il tasto premuto/rilasciato arriva dal browser via WS e pilota
+        # premuto/rilasciato arrivano dal frontend (WS o slot Qt) e pilotano
         # _ptt_held (ptt_down/ptt_up). Stesso event loop, nessun thread.
         held = self._ptt_held
         held.clear()
+        # I parziali ritrascrivono da capo il buffer: oltre questa finestra
+        # il costo cresce senza beneficio percepibile → solo la coda.
+        partial_max_blocks = int(_PARTIAL_WINDOW_S * _PTT_SAMPLE_RATE / _PTT_BLOCK_SIZE)
         logger.info("ui.bridge | PTT attivo (WS) — tasto: '{}'", self._ptt_key_str)
         try:
             while not self._stop_event.is_set():
@@ -713,23 +736,40 @@ class UIBridge(VoiceLoop):
                     continue
                 self._set_state(LoopState.RECORDING)
                 frames, t0 = [], time.monotonic()
+                last_partial, partial_task = 0.0, None
                 stream = sd.InputStream(samplerate=_PTT_SAMPLE_RATE, channels=1, dtype="int16", blocksize=_PTT_BLOCK_SIZE)
                 stream.start()
                 try:
                     while held.is_set() and not self._stop_event.is_set():
                         data, _ = stream.read(_PTT_BLOCK_SIZE)
                         frames.append(data.copy()); await asyncio.sleep(0.005)
+                        now = time.monotonic()
+                        if (now - t0 >= _PARTIAL_FIRST_S
+                                and now - last_partial >= _PARTIAL_EVERY_S
+                                and (partial_task is None or partial_task.done())):
+                            last_partial = now
+                            snap = np.concatenate(frames[-partial_max_blocks:]).tobytes()
+                            partial_task = asyncio.create_task(self._stt_partial(snap))
                 finally: stream.stop(); stream.close()
                 dur = time.monotonic() - t0
                 self._set_state(LoopState.LISTENING)
-                if dur < _PTT_MIN_DURATION_S or not frames: continue
+                # Il modello whisper non è thread-safe: la trascrizione finale
+                # parte solo dopo che l'eventuale parziale in volo è concluso.
+                if partial_task is not None and not partial_task.done():
+                    try: await asyncio.wait_for(partial_task, timeout=10)
+                    except Exception: pass
+                if dur < _PTT_MIN_DURATION_S or not frames:
+                    self._emit({"type": "stt_partial", "text": "", "final": True})
+                    continue
                 try:
                     _t0_stt = time.monotonic()
                     r = await self._stt.transcribe(np.concatenate(frames).tobytes())
                     self._last_stt_ms = round((time.monotonic() - _t0_stt) * 1000, 1)
+                    self._emit({"type": "stt_partial", "text": r.text, "final": True})
                     if not r.is_empty():
                         try: self._turn_queue.put_nowait(r)
                         except asyncio.QueueFull: pass
                 except Exception as e:
+                    self._emit({"type": "stt_partial", "text": "", "final": True})
                     self._stats.stt_errors += 1; logger.error("ui.bridge | STT: {}", e)
         finally: held.clear()

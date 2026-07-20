@@ -153,6 +153,19 @@ class TestErrorAndTerminalRouting:
         assert got and got[0][0]["ok"] is True
 
 
+class TestSttPartialRouting:
+    def test_parziale_instradato(self, backend):
+        got = _capture(backend.sttPartial)
+        backend._on_event({"type": "stt_partial", "text": "ciao mon", "final": False})
+        assert got and got[0][0]["text"] == "ciao mon"
+        assert got[0][0]["final"] is False
+
+    def test_finale_instradato(self, backend):
+        got = _capture(backend.sttPartial)
+        backend._on_event({"type": "stt_partial", "text": "ciao mondo", "final": True})
+        assert got and got[0][0]["final"] is True
+
+
 class TestSystemStatusRouting:
     def test_payload_system_instradato(self, backend):
         got = _capture(backend.systemStatus)
