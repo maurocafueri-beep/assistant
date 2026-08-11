@@ -24,6 +24,7 @@ import numpy as np
 import pytest
 
 from modules.tts.base_tts import (
+    PROJECT_ROOT,
     OUTPUT_SAMPLE_RATE,
     Qwen3TTS,
     TTSChunk,
@@ -555,3 +556,47 @@ class TestWarmup:
         mock_tts._http.post = AsyncMock(side_effect=RuntimeError("server giù"))
         ok = await mock_tts.warmup()  # non deve sollevare
         assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# _die_with_parent — il server TTS non sopravvive al processo padre
+# ---------------------------------------------------------------------------
+
+class TestDieWithParent:
+    """
+    Senza PR_SET_PDEATHSIG un crash dell'app lascerebbe il server TTS orfano
+    a occupare ~3,4 GB di RAM e la VRAM della GPU dedicata.
+    """
+
+    def test_figlio_muore_col_padre(self, tmp_path):
+        import os
+        import subprocess
+        import sys
+        import time
+
+        script = tmp_path / "parent.py"
+        script.write_text(
+            "import subprocess, sys, time\n"
+            f"sys.path.insert(0, {str(PROJECT_ROOT)!r})\n"
+            "from modules.tts.base_tts import _die_with_parent\n"
+            "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],"
+            " preexec_fn=_die_with_parent)\n"
+            "print(c.pid, flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        parent = subprocess.Popen([sys.executable, str(script)], stdout=subprocess.PIPE, text=True)
+        try:
+            child_pid = int(parent.stdout.readline().strip())
+            os.kill(child_pid, 0)              # vivo prima
+            parent.kill()                      # SIGKILL: nessuna pulizia ordinata
+            parent.wait(timeout=5)
+            for _ in range(50):                # il kernel notifica in fretta
+                time.sleep(0.1)
+                try:
+                    os.kill(child_pid, 0)
+                except ProcessLookupError:
+                    return                     # figlio morto: atteso
+            pytest.fail("il server TTS è sopravvissuto alla morte del padre")
+        finally:
+            if parent.poll() is None:
+                parent.kill()

@@ -10,11 +10,12 @@ Non usare direttamente — usare scripts/run_native.py.
 
 from __future__ import annotations
 
+import signal
 import sys
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import QEvent, QObject, Qt, QUrl
+from PyQt6.QtCore import QEvent, QObject, Qt, QTimer, QUrl
 from PyQt6.QtGui import QIcon
 from PyQt6.QtQml import QQmlApplicationEngine
 # QApplication (widgets) e non QGuiApplication: serve al QFileDialog di
@@ -84,6 +85,23 @@ def run(personality: Optional[str] = None, ptt_key: str = "alt") -> int:
 
     backend.start(personality=personality, ptt_key=ptt_key)
     app.aboutToQuit.connect(backend.shutdown)
+
+    # Chiusura pulita anche da segnale (systemctl stop, kill, Ctrl+C nel
+    # terminale che ha lanciato l'app): senza questo Python termina il
+    # processo di colpo, aboutToQuit non scatta e la catena di teardown
+    # (scarico modelli dalla VRAM, arresto del server TTS) non gira mai.
+    def _quit(signum, _frame) -> None:
+        logger.info("ui.native | segnale {} → chiusura pulita", signum)
+        app.quit()
+
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, _quit)
+    # Qt blocca l'event loop in C++: senza un timer che restituisce
+    # periodicamente il controllo all'interprete, i gestori Python dei
+    # segnali non verrebbero mai eseguiti.
+    _sig_pump = QTimer()
+    _sig_pump.start(200)
+    _sig_pump.timeout.connect(lambda: None)
 
     logger.info("ui.native | finestra Qt Quick pronta")
     return app.exec()

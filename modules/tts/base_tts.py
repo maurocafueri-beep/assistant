@@ -60,6 +60,23 @@ PROJECT_ROOT   = Path(__file__).parent.parent.parent
 _VENV_TTS      = PROJECT_ROOT / "venv-tts"
 _SERVER_SCRIPT = Path(__file__).parent / "server.py"
 
+
+def _die_with_parent() -> None:
+    """
+    Rete di sicurezza per il server TTS: se il processo padre muore in modo
+    brutale (crash, kill -9), la chiusura ordinata non gira e il server
+    resterebbe orfano a occupare ~3,4 GB di RAM e la VRAM della GPU1.
+
+    PR_SET_PDEATHSIG chiede al kernel di mandargli SIGTERM appena il padre
+    termina, qualunque sia la causa. Solo Linux; best-effort, gira nel
+    figlio tra fork ed exec.
+    """
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").prctl(1, 15, 0, 0, 0)   # PR_SET_PDEATHSIG, SIGTERM
+    except Exception:
+        pass
+
 _LANG_MAP: dict[str, str] = {
     "it":    "italian",
     "en":    "english",
@@ -312,6 +329,7 @@ class Qwen3TTS:
             cmd, env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            preexec_fn=_die_with_parent,
         )
         self._owns_server = True
 

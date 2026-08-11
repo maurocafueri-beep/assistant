@@ -416,3 +416,72 @@ class TestStripThink:
         big = "A<think>ragionamento</think>B<thinking>altro</thinking>C"
         assert _strip_think_tags(big) == "ABC"
         assert _strip_think_tags("no tags here") == "no tags here"
+
+
+# ---------------------------------------------------------------------------
+# OllamaClient.unload_models — liberazione VRAM alla chiusura
+# ---------------------------------------------------------------------------
+
+def _mock_ps(names: list[str]) -> MagicMock:
+    r = MagicMock()
+    r.json.return_value = {"models": [{"name": n} for n in names]}
+    r.raise_for_status.return_value = None
+    return r
+
+
+class TestUnloadModels:
+    async def test_scarica_solo_i_modelli_usati(self, single_user_msg):
+        posts: list[dict] = []
+
+        async def fake_post(url, *, json=None, **kw):
+            posts.append({"url": url, **(json or {})})
+            return _mock_chat_resp()
+
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock, side_effect=fake_post), \
+             patch("httpx.AsyncClient.get", new_callable=AsyncMock,
+                   return_value=_mock_ps(["mio:latest", "di-un-altra-app:latest"])), \
+             patch("httpx.AsyncClient.aclose", new_callable=AsyncMock):
+            async with OllamaClient() as llm:
+                await llm.chat(single_user_msg, model="mio:latest")
+
+        unloads = [p for p in posts if p.get("keep_alive") == 0]
+        assert [u["model"] for u in unloads] == ["mio:latest"]
+        assert all(u["url"] == "/api/generate" for u in unloads)
+
+    async def test_nessuna_richiesta_nessuno_scarico(self):
+        with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as get, \
+             patch("httpx.AsyncClient.aclose", new_callable=AsyncMock):
+            async with OllamaClient() as llm:
+                pass
+        assert get.await_count == 0
+
+    async def test_tag_latest_normalizzato(self, single_user_msg):
+        """Il modello è usato senza tag ma Ollama lo elenca con ':latest'."""
+        posts: list[dict] = []
+
+        async def fake_post(url, *, json=None, **kw):
+            posts.append({"url": url, **(json or {})})
+            return _mock_chat_resp()
+
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock, side_effect=fake_post), \
+             patch("httpx.AsyncClient.get", new_callable=AsyncMock,
+                   return_value=_mock_ps(["senza-tag:latest"])), \
+             patch("httpx.AsyncClient.aclose", new_callable=AsyncMock):
+            async with OllamaClient() as llm:
+                await llm.chat(single_user_msg, model="senza-tag")
+
+        assert [p["model"] for p in posts if p.get("keep_alive") == 0] == ["senza-tag:latest"]
+
+    async def test_errore_ollama_non_solleva(self, single_user_msg):
+        async def fake_post(url, *, json=None, **kw):
+            if (json or {}).get("keep_alive") == 0:
+                raise RuntimeError("ollama giù")
+            return _mock_chat_resp()
+
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock, side_effect=fake_post), \
+             patch("httpx.AsyncClient.get", new_callable=AsyncMock,
+                   return_value=_mock_ps(["mio:latest"])), \
+             patch("httpx.AsyncClient.aclose", new_callable=AsyncMock):
+            async with OllamaClient() as llm:
+                await llm.chat(single_user_msg, model="mio:latest")
+        # nessuna eccezione propagata: la chiusura resta pulita

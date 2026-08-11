@@ -25,7 +25,7 @@ import json
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, AsyncGenerator, Optional, Union
+from typing import Any, AsyncGenerator, Iterable, Optional, Union
 
 import httpx
 
@@ -232,6 +232,15 @@ class OllamaClient:
             base_url=settings.ollama.base_url,
             timeout=httpx.Timeout(settings.ollama.timeout),
         )
+        # Modelli per cui ABBIAMO fatto richieste: solo questi vengono
+        # scaricati dalla VRAM alla chiusura (vedi unload_models).
+        self._touched: set[str] = set()
+
+    def _resolve(self, model: Optional[str], role: Optional[ModelRole]) -> str:
+        """Nome modello per la richiesta, registrandolo come "nostro"."""
+        name = model or (_model_for_role(role) if role else settings.ollama.embed_model)
+        self._touched.add(name)
+        return name
 
     # -- context manager -------------------------------------------------------
 
@@ -242,7 +251,59 @@ class OllamaClient:
         await self.aclose()
 
     async def aclose(self) -> None:
+        await self.unload_models()
         await self._http.aclose()
+
+    async def unload_models(self) -> int:
+        """
+        Scarica dalla VRAM i modelli che abbiamo tenuto residenti.
+
+        Ogni richiesta viaggia con `keep_alive` (30m di default) perché tra
+        un turno e l'altro il modello NON debba ricaricarsi. Alla chiusura
+        però quella residenza diventa spreco: senza questo passo l'assistente
+        continua a occupare ~8 GB di VRAM per mezz'ora dopo l'uscita.
+        `keep_alive: 0` dice a Ollama di liberarlo subito.
+
+        Best-effort e mirato: scarica solo i modelli per cui QUESTA istanza
+        ha fatto richieste (`_touched`, che include gli override scelti a
+        runtime dalla UI), mai quelli caricati da altre applicazioni. Non
+        solleva mai.
+
+        Returns:
+            Numero di modelli per cui lo scarico è stato richiesto.
+        """
+        if not self._touched:
+            return 0
+        ours = set(self._touched)
+        # Ollama riporta i nomi con tag esplicito (":latest"): normalizziamo
+        # entrambi i lati, altrimenti "modello" non combacia con "modello:latest".
+        norm = lambda n: n if ":" in n else f"{n}:latest"
+        ours = {norm(n) for n in ours}
+        try:
+            r = await self._http.get("/api/ps")
+            r.raise_for_status()
+            loaded = [m.get("name", "") for m in r.json().get("models", [])]
+        except Exception as exc:
+            logger.debug("llm.unload | lista modelli non disponibile: {}", exc)
+            return 0
+
+        done = 0
+        for name in loaded:
+            if name not in ours:
+                continue
+            try:
+                # generate con prompt vuoto: nessuna inferenza, solo lo
+                # scarico immediato (endpoint documentato da Ollama).
+                r = await self._http.post(
+                    "/api/generate",
+                    json={"model": name, "keep_alive": 0},
+                )
+                r.raise_for_status()
+                done += 1
+                logger.info("llm.unload | '{}' scaricato dalla VRAM", name)
+            except Exception as exc:
+                logger.warning("llm.unload | '{}' fallito: {}", name, exc)
+        return done
 
     # -- utility ---------------------------------------------------------------
 
@@ -280,7 +341,7 @@ class OllamaClient:
             options:  Parametri Ollama (temperature, num_ctx, …).
             system:   System prompt (aggiunto in testa se non già presente).
         """
-        resolved = model or _model_for_role(role)
+        resolved = self._resolve(model, role)
         payload  = self._build_payload(resolved, messages, options, system, stream=False)
 
         logger.debug("llm.chat | model={} msgs={}", resolved, len(messages))
@@ -322,7 +383,7 @@ class OllamaClient:
             async for chunk in client.stream(messages, ModelRole.CHAT):
                 print(chunk, end="", flush=True)
         """
-        resolved = model or _model_for_role(role)
+        resolved = self._resolve(model, role)
         payload  = self._build_payload(resolved, messages, options, system, stream=True)
 
         logger.debug("llm.stream | model={}", resolved)
@@ -367,7 +428,7 @@ class OllamaClient:
         il modello caricato dopo il warmup. Best-effort: non solleva, ritorna
         True solo se la richiesta è andata a buon fine.
         """
-        resolved = model or _model_for_role(role)
+        resolved = self._resolve(model, role)
         # num_ctx coerente coi settings: se il warmup carica il modello con
         # context 4K (default Ollama) e poi la prima chat reale arriva con
         # 8K, Ollama deve ricaricare e il warmup non scalda nulla. Allineare
@@ -426,7 +487,7 @@ class OllamaClient:
         Returns:
             Lista di vettori float — uno per ogni testo.
         """
-        resolved = model or settings.ollama.embed_model
+        resolved = self._resolve(model, None)
         if isinstance(texts, str):
             texts = [texts]
 

@@ -568,6 +568,8 @@ class Orchestrator:
 
         tasks = []
         if self._llm:
+            # aclose() scarica anche i modelli dalla VRAM (keep_alive=0),
+            # override runtime inclusi: il client sa quali ha usato.
             tasks.append(self._llm.aclose())
         if self._memory:
             tasks.append(self._memory.aclose())
